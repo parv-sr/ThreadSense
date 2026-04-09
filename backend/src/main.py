@@ -6,6 +6,7 @@ import structlog
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from backend.src.api.endpoints.chat import build_rag_agent
 from backend.src.api.main_router import api_router
 from backend.src.core.config import get_settings
 from backend.src.tasks import broker
@@ -24,18 +25,26 @@ def configure_logging() -> None:
 
 
 configure_logging()
-log = structlog.get_logger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI):
+async def lifespan(app: FastAPI):
     await broker.startup()
-    log.info("taskiq_started", redis_url=settings.redis_url)
+    logger.info("taskiq_started", redis_url=settings.redis_url)
+
+    try:
+        app.state.rag_agent = build_rag_agent()
+        logger.info("rag_agent_ready")
+    except Exception as exc:  # noqa: BLE001
+        app.state.rag_agent = None
+        logger.exception("rag_agent_init_failed", error=str(exc))
+
     try:
         yield
     finally:
         await broker.shutdown()
-        log.info("taskiq_shutdown")
+        logger.info("taskiq_shutdown")
 
 
 app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan)
@@ -49,7 +58,7 @@ async def health() -> dict[str, str]:
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(_: Request, exc: Exception) -> JSONResponse:
-    log.exception("unhandled_exception", error=str(exc))
+    logger.exception("unhandled_exception", error=str(exc))
     return JSONResponse(
         status_code=500,
         content={"detail": "Internal server error", "error": str(exc)},

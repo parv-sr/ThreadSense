@@ -1,137 +1,219 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import structlog
 from langchain_core.documents import Document
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
-from langgraph.prebuilt import create_react_agent
 
-from backend.src.rag.prompts import REACT_PROMPT, SYSTEM_PROMPT
-from backend.src.rag.retriever import HybridQdrantRetriever
+from backend.src.rag.prompts import FINAL_REASONING_PROMPT, REACT_PROMPT, SYSTEM_PROMPT
 from backend.src.rag.state import AgentState
-from backend.src.rag.tools import (
-    compare_listings,
-    filter_listings,
-    get_conversation_stats,
-    get_listing_details,
-    hybrid_retrieve,
-    summarize_listings,
+from backend.src.rag.tools import RAG_TOOLS, get_cached_docs
+from backend.src.rag.utils import (
+    ReasoningOutput,
+    extract_chunk_id,
+    extract_sources_from_reasoning,
+    last_five_conversation_messages,
+    render_table_html,
 )
-from backend.src.rag.utils import RAGResponse, render_table_html, validate_citations
 
-log = structlog.get_logger(__name__)
+logger = structlog.get_logger(__name__)
 
 
-class RAGGraphBuilder:
-    """Builds a robust ReAct-style StateGraph for ThreadSense chat."""
+class ReActRAGGraph:
+    """Custom async ReAct StateGraph with dynamic agent/tool loop."""
 
-    def __init__(self, retriever: HybridQdrantRetriever) -> None:
-        self.retriever = retriever
-        self.model = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-        self.memory = MemorySaver()
-        self._base_react = create_react_agent(
-            self.model,
-            tools=[
-                hybrid_retrieve,
-                filter_listings,
-                compare_listings,
-                summarize_listings,
-                get_listing_details,
-                get_conversation_stats,
-            ],
-            checkpointer=self.memory,
-            prompt=f"{SYSTEM_PROMPT}\n\n{REACT_PROMPT}",
-        )
+    def __init__(self, model_name: str = "gpt-4o-mini") -> None:
+        self.checkpointer = MemorySaver()
+        self.llm = ChatOpenAI(model=model_name, temperature=0.1)
+        self.tool_llm = self.llm.bind_tools(RAG_TOOLS)
+        self.reasoning_llm = self.llm.with_structured_output(ReasoningOutput)
 
-    async def _retrieve_node(self, state: AgentState) -> AgentState:
-        step = int(state.get("step_count", 0)) + 1
-        query = state["messages"][-1].content if state.get("messages") else ""
-        filters = state.get("filters")
-        docs = await self.retriever.retrieve(str(query), filters=filters, limit=20)
-        log.info("graph_retrieve", thread_id=state.get("thread_id"), docs=len(docs), step=step)
-        return {**state, "retrieved_docs": docs, "step_count": step}
+    async def _agent_node(self, state: AgentState) -> AgentState:
+        """Reason about next action and optionally emit tool calls."""
 
-    async def _reason_node(self, state: AgentState) -> AgentState:
-        docs: list[Document] = state.get("retrieved_docs", [])
+        message_history = list(state.get("messages", []))
+        convo_window = last_five_conversation_messages(message_history)
+
+        prompt: list[BaseMessage] = [
+            SystemMessage(content=SYSTEM_PROMPT),
+            SystemMessage(content=REACT_PROMPT),
+            *convo_window,
+        ]
+
+        logger.info("react_agent_node", thread_id=state.get("thread_id"), message_count=len(convo_window))
+        ai_message = await self.tool_llm.ainvoke(prompt)
+        return {"messages": [ai_message]}
+
+    async def _tool_node(self, state: AgentState) -> AgentState:
+        """Execute tool calls emitted by the latest assistant message."""
+
+        messages = list(state.get("messages", []))
+        if not messages or not isinstance(messages[-1], AIMessage):
+            return {}
+
+        ai_message: AIMessage = messages[-1]
+        tool_messages: list[ToolMessage] = []
+
+        for tool_call in ai_message.tool_calls:
+            tool_name = tool_call["name"]
+            args = tool_call.get("args", {})
+            tool = next((t for t in RAG_TOOLS if t.name == tool_name), None)
+
+            if tool is None:
+                logger.warning("tool_not_found", tool=tool_name)
+                tool_messages.append(
+                    ToolMessage(content=f"Tool '{tool_name}' is unavailable.", tool_call_id=tool_call["id"], name=tool_name)
+                )
+                continue
+
+            logger.info("tool_call_start", thread_id=state.get("thread_id"), tool=tool_name, args=args)
+            result = await tool.ainvoke(args)
+            logger.info("tool_call_done", thread_id=state.get("thread_id"), tool=tool_name)
+
+            if isinstance(result, list) and result and isinstance(result[0], Document):
+                content = json.dumps(
+                    [
+                        {
+                            "chunk_id": extract_chunk_id(doc),
+                            "metadata": doc.metadata,
+                            "preview": doc.page_content[:240],
+                        }
+                        for doc in result[:20]
+                    ],
+                    default=str,
+                )
+            else:
+                content = json.dumps(result, default=str)
+
+            tool_messages.append(ToolMessage(content=content, tool_call_id=tool_call["id"], name=tool_name))
+
+        return {"messages": tool_messages, "retrieved_docs": get_cached_docs()}
+
+    def _route_after_agent(self, state: AgentState) -> str:
+        """Route agent output either to tool execution or finalization."""
+
+        messages = list(state.get("messages", []))
+        if not messages:
+            return "finalize"
+
+        last = messages[-1]
+        if isinstance(last, AIMessage) and last.tool_calls:
+            return "tools"
+        return "finalize"
+
+    async def _finalize_node(self, state: AgentState) -> AgentState:
+        """Build final table + reasoning with robust fallback behavior."""
+
+        docs = list(state.get("retrieved_docs", []))
         if not docs:
-            response = RAGResponse(
-                table_html=render_table_html([]),
-                reasoning="No relevant listings found in the retrieved dataset.",
-                sources=[],
+            empty_table = render_table_html([])
+            reasoning = (
+                "I could not find matching listings in the current dataset. "
+                "Try loosening budget, location, or BHK constraints and re-run the search."
             )
-            return {**state, **response.model_dump()}
+            return {
+                "table_html": empty_table,
+                "reasoning": reasoning,
+                "sources": [],
+                "messages": [AIMessage(content=reasoning)],
+            }
 
-        rows: list[dict[str, str]] = []
-        source_ids: list[str] = []
-        for d in docs[:20]:
-            meta = d.metadata or {}
-            listing_id = str(meta.get("listing_id", meta.get("raw_message_chunk_id", "")))
-            if listing_id:
-                source_ids.append(listing_id)
+        rows: list[dict[str, Any]] = []
+        sources: list[str] = []
+        for doc in docs[:20]:
+            metadata = doc.metadata or {}
+            chunk_id = extract_chunk_id(doc)
+            if chunk_id:
+                sources.append(chunk_id)
+
             rows.append(
                 {
-                    "bhk": str(meta.get("bhk", "")),
-                    "price": str(meta.get("price", "")),
-                    "location": str(meta.get("location", "")),
-                    "contact_number": str(meta.get("contact_number", "")),
-                    "timestamp": str(meta.get("timestamp", "")),
-                    "sender": str(meta.get("sender", "")),
-                    "listing_id": listing_id,
+                    "bhk": metadata.get("bhk", "N/A"),
+                    "price": metadata.get("price", metadata.get("price_text", "N/A")),
+                    "location": metadata.get("location", "N/A"),
+                    "contact_number": metadata.get("contact_number", metadata.get("phone", "N/A")),
+                    "timestamp": metadata.get("timestamp", metadata.get("message_start", "N/A")),
+                    "sender": metadata.get("sender", "N/A"),
+                    "listing_id": metadata.get("listing_id", chunk_id),
+                    "chunk_id": chunk_id,
                 }
             )
 
         table_html = render_table_html(rows)
-        citations = " ".join(f"[source:{sid}]" for sid in source_ids[:8])
-        reasoning = (
-            f"I found {len(rows)} relevant listings based on your criteria. "
-            f"The strongest matches are ranked by retrieval score and metadata alignment. {citations}"
-        ).strip()
+        unique_sources = sorted(set(sources))
 
-        ok, missing = validate_citations(reasoning, source_ids)
-        if not ok:
-            reasoning += f" (citation warning: missing {missing})"
+        latest_user_query = ""
+        for message in reversed(list(state.get("messages", []))):
+            if isinstance(message, HumanMessage):
+                latest_user_query = str(message.content)
+                break
 
-        response = RAGResponse(table_html=table_html, reasoning=reasoning, sources=sorted(set(source_ids)))
-        return {**state, **response.model_dump()}
+        evidence = [
+            {
+                "chunk_id": extract_chunk_id(doc),
+                "metadata": doc.metadata,
+                "preview": doc.page_content[:500],
+            }
+            for doc in docs[:12]
+        ]
 
-    def _route_after_retrieve(self, state: AgentState) -> str:
-        if int(state.get("step_count", 0)) >= 8:
-            return "finalize"
-        if not state.get("retrieved_docs"):
-            return "finalize"
-        return "reason"
+        try:
+            reasoning_result = await self.reasoning_llm.ainvoke(
+                [
+                    SystemMessage(content=SYSTEM_PROMPT),
+                    SystemMessage(content=FINAL_REASONING_PROMPT),
+                    HumanMessage(
+                        content=(
+                            f"User query: {latest_user_query}\n"
+                            f"Source IDs: {unique_sources}\n"
+                            f"Evidence JSON: {json.dumps(evidence, default=str)}"
+                        )
+                    ),
+                ]
+            )
+            reasoning = reasoning_result.reasoning
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("final_reasoning_failed", error=str(exc))
+            citations = " ".join(f"[source:{source}]" for source in unique_sources[:6])
+            reasoning = (
+                "These listings were selected because they best match your requested constraints "
+                f"based on retrieved evidence. {citations}"
+            )
 
-    async def _finalize_node(self, state: AgentState) -> AgentState:
-        table_html = state.get("table_html") or render_table_html([])
-        reasoning = state.get("reasoning") or "No answer generated."
-        sources = state.get("sources") or []
-        final = RAGResponse(table_html=table_html, reasoning=reasoning, sources=sources)
+        cited = extract_sources_from_reasoning(reasoning)
+        if unique_sources and not cited:
+            reasoning = reasoning + "\n\n" + " ".join(f"[source:{source}]" for source in unique_sources[:6])
+
         return {
-            **state,
-            "table_html": final.table_html,
-            "reasoning": final.reasoning,
-            "sources": final.sources,
-            "messages": [*state.get("messages", []), AIMessage(content=final.reasoning)],
+            "table_html": table_html,
+            "reasoning": reasoning,
+            "sources": unique_sources,
+            "messages": [AIMessage(content=reasoning)],
         }
 
     def compile(self):
-        graph = StateGraph(AgentState)
-        graph.add_node("retrieve", self._retrieve_node)
-        graph.add_node("reason", self._reason_node)
-        graph.add_node("finalize", self._finalize_node)
-        graph.set_entry_point("retrieve")
-        graph.add_conditional_edges(
-            "retrieve",
-            self._route_after_retrieve,
+        """Compile graph with conditional edges for true ReAct behavior."""
+
+        workflow = StateGraph(AgentState)
+        workflow.add_node("agent", self._agent_node)
+        workflow.add_node("tools", self._tool_node)
+        workflow.add_node("finalize", self._finalize_node)
+
+        workflow.set_entry_point("agent")
+        workflow.add_conditional_edges(
+            "agent",
+            self._route_after_agent,
             {
-                "reason": "reason",
+                "tools": "tools",
                 "finalize": "finalize",
             },
         )
-        graph.add_edge("reason", "finalize")
-        graph.add_edge("finalize", END)
-        return graph.compile(checkpointer=self.memory)
+        workflow.add_edge("tools", "agent")
+        workflow.add_edge("finalize", END)
+
+        return workflow.compile(checkpointer=self.checkpointer)
