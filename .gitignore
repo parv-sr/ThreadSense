@@ -15,4 +15,3 @@ frontend/dist/
 frontend/node_modules/
 
 .env
-.env/
