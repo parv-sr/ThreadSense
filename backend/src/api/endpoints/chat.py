@@ -1,65 +1,81 @@
 from __future__ import annotations
 
+import os
 from functools import lru_cache
-from typing import Any
+from uuid import UUID
 
 import structlog
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from langchain_openai import OpenAIEmbeddings
+from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
 from qdrant_client import AsyncQdrantClient
-from qdrant_client.http.models import Distance, VectorParams
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.src.api.schemas.chat import ChatRequest, ChatResponse
+from backend.src.api.dependencies import get_db_session
+from backend.src.api.schemas.chat import ChatRequest, ChatResponse, SourceResponse
+from backend.src.models.ingestion import RawMessageChunk
 from backend.src.rag.agent import RAGAgent
 from backend.src.rag.retriever import HybridQdrantRetriever
 
-log = structlog.get_logger(__name__)
+logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
-
-
-class _InMemoryEmbedding:
-    async def aembed_query(self, text: str) -> list[float]:
-        return [float((sum(map(ord, text)) % 97) / 100.0)] * 16
 
 
 @lru_cache(maxsize=1)
 def _get_agent() -> RAGAgent:
-    # Placeholder local client setup; in production use env-driven configuration and pre-created collection.
-    client = AsyncQdrantClient(location=":memory:")
+    """Create singleton RAG agent backed by hybrid Qdrant retrieval."""
 
-    async def _ensure_collection() -> None:
-        collections = await client.get_collections()
-        names = {c.name for c in collections.collections}
-        if "threadsense_listings" not in names:
-            await client.create_collection(
-                collection_name="threadsense_listings",
-                vectors_config=VectorParams(size=16, distance=Distance.COSINE),
-            )
+    qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+    qdrant_api_key = os.getenv("QDRANT_API_KEY")
+    collection_name = os.getenv("QDRANT_COLLECTION", "threadsense_listings")
+    embedding_model = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
 
-    # Best-effort startup hook for local/demo mode.
-    try:
-        import asyncio
-
-        asyncio.get_event_loop().run_until_complete(_ensure_collection())
-    except Exception:  # noqa: BLE001
-        pass
-
-    from langchain_qdrant import QdrantVectorStore
-
-    store = QdrantVectorStore(
-        client=client,
-        collection_name="threadsense_listings",
-        embedding=_InMemoryEmbedding(),
+    qdrant_client = AsyncQdrantClient(url=qdrant_url, api_key=qdrant_api_key)
+    vector_store = QdrantVectorStore(
+        client=qdrant_client,
+        collection_name=collection_name,
+        embedding=OpenAIEmbeddings(model=embedding_model),
+        sparse_embedding=FastEmbedSparse(model_name="Qdrant/bm25"),
+        retrieval_mode=RetrievalMode.HYBRID,
+        vector_name="dense",
+        sparse_vector_name="sparse",
     )
-    retriever = HybridQdrantRetriever(store)
+    retriever = HybridQdrantRetriever(vector_store)
     return RAGAgent.compile(retriever)
 
 
 @router.post("/", response_model=ChatResponse)
 async def chat(payload: ChatRequest) -> ChatResponse:
-    agent = _get_agent()
+    """Run one conversational turn through the ReAct RAG graph."""
+
     try:
-        result: dict[str, Any] = await agent.invoke(payload.message, payload.thread_id)
-        return ChatResponse(**result)
+        result = await _get_agent().invoke(message=payload.message, thread_id=payload.thread_id)
     except Exception as exc:  # noqa: BLE001
-        log.exception("chat_endpoint_failed", error=str(exc))
-        raise HTTPException(status_code=500, detail=f"Chat agent failed: {exc}") from exc
+        logger.exception("chat_invoke_failed", error=str(exc))
+        raise HTTPException(status_code=500, detail="Failed to generate chat response") from exc
+
+    return ChatResponse(**result)
+
+
+@router.get("/source/{chunk_id}", response_model=SourceResponse)
+async def get_source(chunk_id: str, session: AsyncSession = Depends(get_db_session)) -> SourceResponse:
+    """Fetch full raw message chunk used by a table row's View Source button."""
+
+    try:
+        parsed_id = UUID(chunk_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="chunk_id must be a valid UUID") from exc
+
+    chunk = await session.get(RawMessageChunk, parsed_id)
+    if chunk is None:
+        raise HTTPException(status_code=404, detail="Source chunk not found")
+
+    return SourceResponse(
+        chunk_id=str(chunk.id),
+        message_start=chunk.message_start,
+        sender=chunk.sender,
+        raw_text=chunk.raw_text,
+        cleaned_text=chunk.cleaned_text,
+        status=chunk.status,
+        created_at=chunk.created_at,
+    )
