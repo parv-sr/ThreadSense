@@ -1,13 +1,17 @@
 [build-system]
-requires = ["maturin>=1.12,<2.0"]
+requires = ["maturin>=1.5,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "wpt"
-requires-python = ">=3.8"
+name = "whatsapp_parser"
+requires-python = ">=3.10"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
-    "Programming Language :: Python :: Implementation :: PyPy",
 ]
 dynamic = ["version"]
+
+[tool.maturin]
+module-name = "whatsapp_parser"
+python-source = "."
+features = ["pyo3/extension-module"]
