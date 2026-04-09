@@ -4,34 +4,57 @@ from typing import Any
 
 import structlog
 from langchain_core.documents import Document
+from qdrant_client.http import models as qmodels
 
-log = structlog.get_logger(__name__)
-
-try:
-    from langchain_qdrant import QdrantVectorStore
-except Exception:  # noqa: BLE001
-    QdrantVectorStore = Any  # type: ignore[misc,assignment]
+logger = structlog.get_logger(__name__)
 
 
 class HybridQdrantRetriever:
-    """Hybrid retriever wrapper for vector + keyword + metadata filters."""
+    """Hybrid (dense + sparse/BM25) retriever over QdrantVectorStore."""
 
-    def __init__(self, vector_store: QdrantVectorStore) -> None:
+    def __init__(self, vector_store: Any) -> None:
         self.vector_store = vector_store
 
-    async def retrieve(
-        self,
-        query: str,
-        *,
-        filters: dict[str, Any] | None = None,
-        limit: int = 20,
-    ) -> list[Document]:
-        log.info("hybrid_retrieve_start", query=query, filters=filters, limit=limit)
-        # Hybrid search mode is selected via `search_type="mmr"` + metadata filters.
+    @staticmethod
+    def _to_qdrant_filter(filters: dict[str, Any] | None) -> qmodels.Filter | None:
+        """Convert API filters to a Qdrant filter expression."""
+
+        if not filters:
+            return None
+
+        must: list[qmodels.FieldCondition] = []
+        if location := filters.get("location"):
+            must.append(qmodels.FieldCondition(key="location", match=qmodels.MatchText(text=str(location))))
+        if sender := filters.get("sender"):
+            must.append(qmodels.FieldCondition(key="sender", match=qmodels.MatchText(text=str(sender))))
+        if bhk := filters.get("bhk"):
+            must.append(qmodels.FieldCondition(key="bhk", match=qmodels.MatchValue(value=str(bhk))))
+        if listing_id := filters.get("listing_id"):
+            must.append(qmodels.FieldCondition(key="listing_id", match=qmodels.MatchValue(value=str(listing_id))))
+
+        min_price = filters.get("min_price")
+        max_price = filters.get("max_price")
+        if min_price is not None or max_price is not None:
+            must.append(
+                qmodels.FieldCondition(
+                    key="price_numeric",
+                    range=qmodels.Range(gte=float(min_price) if min_price is not None else None, lte=float(max_price) if max_price is not None else None),
+                )
+            )
+
+        return qmodels.Filter(must=must) if must else None
+
+    async def retrieve(self, query: str, *, filters: dict[str, Any] | None = None, limit: int = 20) -> list[Document]:
+        """Run hybrid retrieval with metadata filters against Qdrant."""
+
+        q_filter = self._to_qdrant_filter(filters)
+        logger.info("hybrid_retrieve_started", query=query, filters=filters, limit=limit)
+
         retriever = self.vector_store.as_retriever(
-            search_type="mmr",
-            search_kwargs={"k": limit, "fetch_k": max(limit * 2, 40), "filter": filters or {}},
+            search_type="similarity",
+            search_kwargs={"k": limit, "filter": q_filter},
         )
         docs = await retriever.ainvoke(query)
-        log.info("hybrid_retrieve_done", count=len(docs))
+
+        logger.info("hybrid_retrieve_finished", count=len(docs))
         return list(docs)
