@@ -13,5 +13,5 @@ dynamic = ["version"]
 
 [tool.maturin]
 module-name = "whatsapp_parser"
-python-source = "."
+# python-source = "."
 features = ["pyo3/extension-module"]
