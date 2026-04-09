@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Awaitable, Callable
-from datetime import datetime
+from contextvars import ContextVar
 from typing import Any
 from uuid import UUID
 
 import structlog
 from langchain_core.documents import Document
-from langchain_core.tools import StructuredTool, tool
-from sqlalchemy import select
+from langchain_core.tools import tool
 
 from backend.src.db.session import AsyncSessionLocal
 from backend.src.models.ingestion import RawMessageChunk
@@ -18,162 +16,177 @@ from backend.src.rag.utils import extract_chunk_id
 
 logger = structlog.get_logger(__name__)
 
+_retriever_ctx: ContextVar[HybridQdrantRetriever | None] = ContextVar("retriever_ctx", default=None)
+_docs_ctx: ContextVar[list[Document]] = ContextVar("docs_ctx", default=[])
 
-def _coerce_documents(raw_docs: list[Document] | list[dict[str, Any]]) -> list[Document]:
-    docs: list[Document] = []
-    for item in raw_docs:
-        if isinstance(item, Document):
-            docs.append(item)
-        else:
-            docs.append(Document(page_content=str(item.get("page_content", "")), metadata=item.get("metadata", {})))
+
+def set_retriever_context(retriever: HybridQdrantRetriever) -> None:
+    """Bind retriever to the current async context for tool execution."""
+
+    _retriever_ctx.set(retriever)
+
+
+def clear_retriever_context() -> None:
+    """Clear runtime retriever/doc context after request completion."""
+
+    _retriever_ctx.set(None)
+    _docs_ctx.set([])
+
+
+def _coerce_docs(docs: list[Document] | None) -> list[Document]:
+    if docs:
+        return docs
+    return _docs_ctx.get([])
+
+
+def get_cached_docs() -> list[Document]:
+    """Return documents cached by the most recent retrieval/filter tool call."""
+
+    return _docs_ctx.get([])
+
+
+@tool("hybrid_retrieve", parse_docstring=True)
+async def hybrid_retrieve(query: str, filters: dict | None = None) -> list[Document]:
+    """Run real hybrid retrieval against Qdrant using dense + sparse retrieval and metadata filters.
+
+    Args:
+        query: Search query describing desired property listings.
+        filters: Optional metadata constraints such as bhk, location, sender, and min/max price.
+
+    Returns:
+        Ranked listing documents from Qdrant.
+    """
+
+    retriever = _retriever_ctx.get(None)
+    if retriever is None:
+        raise RuntimeError("Hybrid retriever context is not initialized")
+
+    docs = await retriever.retrieve(query=query, filters=filters, limit=20)
+    _docs_ctx.set(docs)
+    logger.info("tool_hybrid_retrieve", query=query, filters=filters, count=len(docs))
     return docs
 
 
-def create_tools(
-    retriever: HybridQdrantRetriever,
-    docs_getter: Callable[[], list[Document]],
-    docs_setter: Callable[[list[Document]], None],
-) -> list[StructuredTool]:
-    """Create tool instances bound to runtime retriever and state bridges."""
+@tool("filter_listings", parse_docstring=True)
+async def filter_listings(docs: list[Document], criteria: dict) -> list[Document]:
+    """Filter listing documents based on explicit metadata criteria.
 
-    @tool("hybrid_retrieve", parse_docstring=True)
-    async def hybrid_retrieve(query: str, filters: dict | None = None) -> list[Document]:
-        """Run hybrid retrieval on Qdrant using vector similarity + BM25 + metadata filters.
+    Args:
+        docs: Candidate listing documents to filter.
+        criteria: Metadata constraints (bhk, location, sender, min_price, max_price).
 
-        Args:
-            query: Free-form user retrieval query.
-            filters: Optional metadata filters (bhk, price bounds, location, sender, listing_id).
+    Returns:
+        Subset of documents satisfying all criteria.
+    """
 
-        Returns:
-            A ranked list of langchain Document objects from Qdrant.
-        """
+    candidates = _coerce_docs(docs)
+    output: list[Document] = []
 
-        docs = await retriever.retrieve(query=query, filters=filters, limit=20)
-        docs_setter(docs)
-        logger.info("tool_hybrid_retrieve", query=query, filters=filters, count=len(docs))
-        return docs
+    for doc in candidates:
+        metadata = doc.metadata or {}
+        include = True
+        for key, value in (criteria or {}).items():
+            if value is None:
+                continue
+            if key == "min_price":
+                if float(metadata.get("price_numeric") or 0.0) < float(value):
+                    include = False
+                    break
+            elif key == "max_price":
+                if float(metadata.get("price_numeric") or 0.0) > float(value):
+                    include = False
+                    break
+            elif str(metadata.get(key, "")).lower() != str(value).lower():
+                include = False
+                break
+        if include:
+            output.append(doc)
 
-    @tool("filter_listings", parse_docstring=True)
-    def filter_listings(docs: list[Document], criteria: dict) -> list[Document]:
-        """Filter retrieved listing documents by metadata constraints.
+    _docs_ctx.set(output)
+    logger.info("tool_filter_listings", before=len(candidates), after=len(output), criteria=criteria)
+    return output
 
-        Args:
-            docs: Candidate listing documents.
-            criteria: Field constraints such as bhk, location, sender, min_price, max_price.
 
-        Returns:
-            Documents matching the supplied constraints.
-        """
+@tool("get_listing_details", parse_docstring=True)
+async def get_listing_details(chunk_id: str) -> dict[str, Any]:
+    """Retrieve full original `RawMessageChunk` from PostgreSQL by chunk UUID.
 
-        normalized_docs = _coerce_documents(docs or docs_getter())
-        result: list[Document] = []
+    Args:
+        chunk_id: UUID of the underlying raw message chunk.
 
-        for doc in normalized_docs:
-            metadata = doc.metadata or {}
-            keep = True
+    Returns:
+        Full source payload suitable for source inspection.
+    """
 
-            for key, value in (criteria or {}).items():
-                if value is None:
-                    continue
-                if key == "min_price":
-                    numeric = float(metadata.get("price_numeric") or 0)
-                    if numeric < float(value):
-                        keep = False
-                        break
-                elif key == "max_price":
-                    numeric = float(metadata.get("price_numeric") or 0)
-                    if numeric > float(value):
-                        keep = False
-                        break
-                else:
-                    if str(metadata.get(key, "")).lower() != str(value).lower():
-                        keep = False
-                        break
+    try:
+        parsed_id = UUID(chunk_id)
+    except ValueError:
+        return {"error": "Invalid chunk_id", "chunk_id": chunk_id}
 
-            if keep:
-                result.append(doc)
+    async with AsyncSessionLocal() as session:
+        chunk = await session.get(RawMessageChunk, parsed_id)
+        if chunk is None:
+            return {"error": "chunk not found", "chunk_id": chunk_id}
 
-        docs_setter(result)
-        logger.info("tool_filter_listings", before=len(normalized_docs), after=len(result), criteria=criteria)
-        return result
+        return {
+            "chunk_id": str(chunk.id),
+            "message_start": chunk.message_start.isoformat() if chunk.message_start else None,
+            "sender": chunk.sender,
+            "raw_text": chunk.raw_text,
+            "cleaned_text": chunk.cleaned_text,
+            "status": chunk.status,
+            "created_at": chunk.created_at.isoformat() if chunk.created_at else None,
+        }
 
-    @tool("get_listing_details", parse_docstring=True)
-    async def get_listing_details(chunk_id: str) -> dict[str, Any]:
-        """Fetch the full original RawMessageChunk from PostgreSQL by chunk_id.
 
-        Args:
-            chunk_id: UUID of the raw message chunk.
+@tool("summarize_listings", parse_docstring=True)
+async def summarize_listings(docs: list[Document]) -> str:
+    """Summarize the active listing set by location and sender distribution.
 
-        Returns:
-            Raw chunk payload including raw_text and cleaned_text.
-        """
+    Args:
+        docs: Listing documents to summarize.
 
-        try:
-            parsed_id = UUID(chunk_id)
-        except ValueError:
-            return {"error": "Invalid chunk_id", "chunk_id": chunk_id}
+    Returns:
+        Concise summary string for the current listing set.
+    """
 
-        async with AsyncSessionLocal() as session:
-            chunk = await session.get(RawMessageChunk, parsed_id)
-            if chunk is None:
-                return {"error": "Chunk not found", "chunk_id": chunk_id}
+    candidates = _coerce_docs(docs)
+    if not candidates:
+        return "No listings are available to summarize."
 
-            return {
-                "chunk_id": str(chunk.id),
-                "timestamp": chunk.message_start.isoformat() if chunk.message_start else None,
-                "sender": chunk.sender,
-                "raw_text": chunk.raw_text,
-                "cleaned_text": chunk.cleaned_text,
-                "status": chunk.status,
-                "created_at": chunk.created_at.isoformat() if chunk.created_at else None,
-            }
+    locations = Counter(str(doc.metadata.get("location", "Unknown")) for doc in candidates)
+    senders = Counter(str(doc.metadata.get("sender", "Unknown")) for doc in candidates)
+    return (
+        f"{len(candidates)} listings across {len(locations)} locations and {len(senders)} senders. "
+        f"Top locations: {', '.join(name for name, _ in locations.most_common(3))}."
+    )
 
-    @tool("summarize_listings", parse_docstring=True)
-    def summarize_listings(docs: list[Document]) -> str:
-        """Generate a concise statistical summary for retrieved listing documents.
 
-        Args:
-            docs: Listing documents to summarize.
+@tool("compare_listings", parse_docstring=True)
+async def compare_listings(listing_ids: list[str]) -> str:
+    """Compare selected listings from the active retrieved set.
 
-        Returns:
-            A compact human-readable summary string.
-        """
+    Args:
+        listing_ids: Listing/chunk IDs to compare.
 
-        normalized_docs = _coerce_documents(docs or docs_getter())
-        if not normalized_docs:
-            return "No listing documents are currently available to summarize."
+    Returns:
+        Compact side-by-side comparison text.
+    """
 
-        by_location = Counter(str(d.metadata.get("location", "Unknown")) for d in normalized_docs)
-        by_sender = Counter(str(d.metadata.get("sender", "Unknown")) for d in normalized_docs)
-        return (
-            f"Retrieved {len(normalized_docs)} listings across "
-            f"{len(by_location)} locations and {len(by_sender)} senders. "
-            f"Top locations: {', '.join(loc for loc, _ in by_location.most_common(3))}."
+    docs = _docs_ctx.get([])
+    ids = {str(item) for item in listing_ids}
+    matched = [doc for doc in docs if extract_chunk_id(doc) in ids]
+    if not matched:
+        return "No matching listing IDs were found in the active results."
+
+    lines: list[str] = []
+    for doc in matched:
+        metadata = doc.metadata or {}
+        cid = extract_chunk_id(doc)
+        lines.append(
+            f"{cid}: {metadata.get('bhk', 'N/A')} | {metadata.get('location', 'N/A')} | {metadata.get('price', 'N/A')}"
         )
+    return " ; ".join(lines)
 
-    @tool("compare_listings", parse_docstring=True)
-    def compare_listings(listing_ids: list[str]) -> str:
-        """Compare selected listing IDs using currently retrieved docs.
 
-        Args:
-            listing_ids: List of listing/chunk IDs to compare.
-
-        Returns:
-            A short comparison summary based on listing metadata.
-        """
-
-        ids = {str(item) for item in listing_ids}
-        matched = [d for d in docs_getter() if extract_chunk_id(d) in ids]
-        if not matched:
-            return "No matching listing IDs found in the active retrieved set."
-
-        lines: list[str] = []
-        for doc in matched:
-            m = doc.metadata or {}
-            cid = extract_chunk_id(doc)
-            lines.append(
-                f"{cid}: {m.get('bhk', 'N/A')} in {m.get('location', 'N/A')} at {m.get('price', 'N/A')}"
-            )
-        return " | ".join(lines)
-
-    return [hybrid_retrieve, filter_listings, get_listing_details, summarize_listings, compare_listings]
+RAG_TOOLS = [hybrid_retrieve, filter_listings, get_listing_details, summarize_listings, compare_listings]

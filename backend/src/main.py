@@ -6,7 +6,7 @@ import structlog
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from backend.src.api.endpoints.chat import _get_agent
+from backend.src.api.endpoints.chat import build_rag_agent
 from backend.src.api.main_router import api_router
 from backend.src.core.config import get_settings
 from backend.src.tasks import broker
@@ -29,14 +29,15 @@ logger = structlog.get_logger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI):
+async def lifespan(app: FastAPI):
     await broker.startup()
     logger.info("taskiq_started", redis_url=settings.redis_url)
 
     try:
-        _get_agent()
-        logger.info("rag_agent_initialized")
+        app.state.rag_agent = build_rag_agent()
+        logger.info("rag_agent_ready")
     except Exception as exc:  # noqa: BLE001
+        app.state.rag_agent = None
         logger.exception("rag_agent_init_failed", error=str(exc))
 
     try:

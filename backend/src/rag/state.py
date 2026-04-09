@@ -8,7 +8,7 @@ from langgraph.graph.message import add_messages
 
 
 class AgentState(TypedDict, total=False):
-    """LangGraph state for the ThreadSense ReAct RAG workflow."""
+    """State carried through the ThreadSense ReAct graph."""
 
     messages: Annotated[Sequence[BaseMessage], add_messages]
     retrieved_docs: list[Document]
@@ -16,4 +16,3 @@ class AgentState(TypedDict, total=False):
     reasoning: str | None
     sources: list[str]
     thread_id: str
-    step_count: int
