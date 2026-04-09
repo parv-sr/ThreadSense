@@ -13,3 +13,6 @@ rust_parser/target/
 
 frontend/dist/
 frontend/node_modules/
+
+.env
+.env/
