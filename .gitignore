@@ -7,4 +7,9 @@ wheels/
 *.egg-info
 
 # Virtual environments
-.venv
+.venv/
+
+rust_parser/target/
+
+frontend/dist/
+frontend/node_modules/
