@@ -5,10 +5,10 @@ from functools import lru_cache
 from uuid import UUID
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from langchain_openai import OpenAIEmbeddings
 from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
-from qdrant_client import AsyncQdrantClient
+from qdrant_client import AsyncQdrantClient, QdrantClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.src.api.dependencies import get_db_session
@@ -21,18 +21,21 @@ logger = structlog.get_logger(__name__)
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
-@lru_cache(maxsize=1)
-def _get_agent() -> RAGAgent:
-    """Create singleton RAG agent backed by hybrid Qdrant retrieval."""
+def build_rag_agent() -> RAGAgent:
+    """Build a production RAG agent connected to persistent Qdrant."""
 
     qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
     qdrant_api_key = os.getenv("QDRANT_API_KEY")
     collection_name = os.getenv("QDRANT_COLLECTION", "threadsense_listings")
     embedding_model = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
 
-    qdrant_client = AsyncQdrantClient(url=qdrant_url, api_key=qdrant_api_key)
+    logger.info("rag_agent_build_start", qdrant_url=qdrant_url, collection=collection_name)
+
+    client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
+    async_client = AsyncQdrantClient(url=qdrant_url, api_key=qdrant_api_key)
     vector_store = QdrantVectorStore(
-        client=qdrant_client,
+        client=client,
+        async_client=async_client,
         collection_name=collection_name,
         embedding=OpenAIEmbeddings(model=embedding_model),
         sparse_embedding=FastEmbedSparse(model_name="Qdrant/bm25"),
@@ -40,26 +43,38 @@ def _get_agent() -> RAGAgent:
         vector_name="dense",
         sparse_vector_name="sparse",
     )
+
     retriever = HybridQdrantRetriever(vector_store)
-    return RAGAgent.compile(retriever)
+    return RAGAgent(retriever)
+
+
+@lru_cache(maxsize=1)
+def _cached_agent() -> RAGAgent:
+    return build_rag_agent()
+
+
+def get_agent(request: Request) -> RAGAgent:
+    """Resolve the initialized app-level agent, falling back to cached singleton."""
+
+    return getattr(request.app.state, "rag_agent", None) or _cached_agent()
 
 
 @router.post("/", response_model=ChatResponse)
-async def chat(payload: ChatRequest) -> ChatResponse:
-    """Run one conversational turn through the ReAct RAG graph."""
+async def chat(payload: ChatRequest, request: Request) -> ChatResponse:
+    """Chat with the fully agentic ReAct RAG workflow."""
 
+    agent = get_agent(request)
     try:
-        result = await _get_agent().invoke(message=payload.message, thread_id=payload.thread_id)
+        result = await agent.invoke(message=payload.message, thread_id=payload.thread_id)
+        return ChatResponse(**result)
     except Exception as exc:  # noqa: BLE001
-        logger.exception("chat_invoke_failed", error=str(exc))
-        raise HTTPException(status_code=500, detail="Failed to generate chat response") from exc
-
-    return ChatResponse(**result)
+        logger.exception("chat_request_failed", error=str(exc))
+        raise HTTPException(status_code=500, detail="RAG agent failed to generate a response") from exc
 
 
 @router.get("/source/{chunk_id}", response_model=SourceResponse)
-async def get_source(chunk_id: str, session: AsyncSession = Depends(get_db_session)) -> SourceResponse:
-    """Fetch full raw message chunk used by a table row's View Source button."""
+async def view_source(chunk_id: str, session: AsyncSession = Depends(get_db_session)) -> SourceResponse:
+    """Return full RawMessageChunk payload for a listing source button click."""
 
     try:
         parsed_id = UUID(chunk_id)

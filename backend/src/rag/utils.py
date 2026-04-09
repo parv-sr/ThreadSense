@@ -2,72 +2,56 @@ from __future__ import annotations
 
 import html
 import re
-from collections.abc import Sequence
 from typing import Any
 
 from langchain_core.documents import Document
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from pydantic import BaseModel, Field
 
 
-class RAGResponse(BaseModel):
-    """Structured API response returned by the chat endpoint."""
+class ReasoningOutput(BaseModel):
+    """Structured payload for final reasoning generation."""
 
-    table_html: str = Field(description="HTML table of matched listings.")
-    reasoning: str = Field(description="Natural-language explanation with [source:<chunk_id>] citations.")
-    sources: list[str] = Field(default_factory=list, description="Unique source chunk IDs used in answer.")
-
-
-def trim_recent_messages(messages: Sequence[BaseMessage], *, keep_last: int = 5) -> list[BaseMessage]:
-    """Keep only the most recent conversation turns for model context."""
-
-    if keep_last <= 0:
-        return []
-    return list(messages[-keep_last:])
+    reasoning: str = Field(description="Detailed explanation with inline source citations.")
 
 
 def extract_chunk_id(doc: Document) -> str:
-    """Resolve canonical chunk ID from document metadata."""
+    """Get a stable chunk id from document metadata."""
 
-    meta = doc.metadata or {}
-    candidates = (
-        meta.get("chunk_id"),
-        meta.get("raw_message_chunk_id"),
-        meta.get("listing_id"),
-        meta.get("id"),
-    )
-    for value in candidates:
+    metadata = doc.metadata or {}
+    for key in ("chunk_id", "raw_message_chunk_id", "listing_id", "id"):
+        value = metadata.get(key)
         if value:
             return str(value)
     return ""
 
 
-def extract_cited_sources(reasoning: str) -> list[str]:
-    """Extract unique source IDs from reasoning citation syntax."""
+def extract_sources_from_reasoning(reasoning: str) -> list[str]:
+    """Collect cited source IDs from reasoning text."""
 
     return sorted(set(re.findall(r"\[source:([^\]]+)\]", reasoning)))
 
 
 def render_table_html(rows: list[dict[str, Any]]) -> str:
-    """Render the mandatory listing table with an inline View Source action."""
+    """Render required output table and View Source button column."""
 
-    headers = ["BHK", "Price", "Location", "Contact Number", "Timestamp", "Sender", "Listing ID", "Source"]
-    thead = "".join(f"<th>{header}</th>" for header in headers)
+    columns = ["BHK", "Price", "Location", "Contact Number", "Timestamp", "Sender", "Listing ID", "Source"]
+    header_html = "".join(f"<th>{column}</th>" for column in columns)
 
-    body_rows: list[str] = []
+    row_html: list[str] = []
     for row in rows:
         chunk_id = html.escape(str(row.get("chunk_id", "")))
         listing_id = html.escape(str(row.get("listing_id", chunk_id)))
-        view_source_button = (
+        source_btn = (
             "<button "
             'type="button" '
-            f'data-chunk-id="{chunk_id}" '
             "class=\"view-source-btn\" "
-            f"onclick=\"fetch('/chat/source/{chunk_id}').then(r => r.json()).then(console.log)\""
+            f'data-chunk-id="{chunk_id}" '
+            f"onclick=\"fetch('/chat/source/{chunk_id}').then(r => r.json()).then(data => window.dispatchEvent(new CustomEvent('threadsense:source', {{ detail: data }})))\""
             ">View Source</button>"
         )
 
-        body_rows.append(
+        row_html.append(
             "<tr>"
             f"<td>{html.escape(str(row.get('bhk', 'N/A')))}</td>"
             f"<td>{html.escape(str(row.get('price', 'N/A')))}</td>"
@@ -76,9 +60,16 @@ def render_table_html(rows: list[dict[str, Any]]) -> str:
             f"<td>{html.escape(str(row.get('timestamp', 'N/A')))}</td>"
             f"<td>{html.escape(str(row.get('sender', 'N/A')))}</td>"
             f"<td>{listing_id}</td>"
-            f"<td>{view_source_button}</td>"
+            f"<td>{source_btn}</td>"
             "</tr>"
         )
 
-    tbody = "".join(body_rows) if body_rows else "<tr><td colspan='8'>No matching listings found.</td></tr>"
-    return f"<table><thead><tr>{thead}</tr></thead><tbody>{tbody}</tbody></table>"
+    body = "".join(row_html) if row_html else "<tr><td colspan='8'>No listings found.</td></tr>"
+    return f"<table><thead><tr>{header_html}</tr></thead><tbody>{body}</tbody></table>"
+
+
+def last_five_conversation_messages(messages: list[BaseMessage]) -> list[BaseMessage]:
+    """Return at most the last 5 human/assistant messages for conversational memory."""
+
+    convo = [m for m in messages if isinstance(m, (HumanMessage, AIMessage))]
+    return convo[-5:]

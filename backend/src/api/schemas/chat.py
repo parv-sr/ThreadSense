@@ -6,14 +6,16 @@ from pydantic import BaseModel, Field
 
 
 class ChatRequest(BaseModel):
-    """Incoming chat prompt payload."""
+    """Incoming chat payload for the RAG endpoint."""
 
     message: str = Field(min_length=1, max_length=6000)
-    thread_id: str | None = Field(default=None, description="Stable thread identifier for memory.")
-
+    thread_id: str | None = Field(default=None, description="Optional thread UUID for memory continuity")
 
 class RAGResponse(BaseModel):
     """Structured chat response payload."""
+
+class ChatResponse(BaseModel):
+    """Structured RAG response payload."""
 
     table_html: str
     reasoning: str
@@ -27,7 +29,7 @@ class ChatResponse(RAGResponse):
 
 
 class SourceResponse(BaseModel):
-    """Raw source chunk detail returned for View Source actions."""
+    """Full raw source chunk details for View Source actions."""
 
     chunk_id: str
     message_start: datetime | None
