@@ -18,6 +18,11 @@ dependencies = [
     "redis>=6.0.0",
     "structlog>=25.4.0",
     "python-multipart>=0.0.20",
+    "langchain>=0.3.20",
+    "langgraph>=0.2.60",
+    "langchain-openai>=0.3.12",
+    "langchain-qdrant>=0.2.0",
+    "qdrant-client>=1.13.3",
 ]
 
 [tool.uv]
