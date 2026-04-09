@@ -242,6 +242,24 @@ async def ingest_raw_file_task(rawfile_id: str) -> dict[str, Any]:
                 created=stats.created_chunks,
                 ignored=stats.ignored_chunks,
             )
+
+            # ---------------------------------------------------------------
+            # Phase 2: Chain the extraction + embedding worker
+            # ---------------------------------------------------------------
+            if stats.created_chunks > 0:
+                from backend.src.tasks.extraction import extract_and_embed_task  # noqa: PLC0415
+
+                try:
+                    await extract_and_embed_task.kiq(str(rawfile.id))
+                    log.info("extract_embed_enqueued", rawfile_id=str(rawfile.id))
+                except Exception as chain_exc:  # noqa: BLE001
+                    # Non-fatal — ingestion succeeded; extraction can be retried manually
+                    log.warning(
+                        "extract_embed_enqueue_failed",
+                        rawfile_id=str(rawfile.id),
+                        error=str(chain_exc),
+                    )
+
             return {
                 "status": "COMPLETED",
                 "rawfile_id": str(rawfile.id),
