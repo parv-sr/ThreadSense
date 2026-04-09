@@ -5,10 +5,13 @@ from functools import lru_cache
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from dotenv import load_dotenv
+load_dotenv(override=True)
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file="backend/.env",
+        env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -16,6 +19,7 @@ class Settings(BaseSettings):
     app_name: str = "ThreadSense v2"
     app_env: str = Field(default="dev", alias="APP_ENV")
     debug: bool = Field(default=False, alias="DEBUG")
+    openai_api_key: str = Field(..., alias="OPENAI_API_KEY")
 
     database_url: str = Field(
         default="postgresql+asyncpg://user:password@localhost:5432/threadsense",

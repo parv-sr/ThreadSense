@@ -10,6 +10,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
+from backend.src.core.config import get_settings
 from backend.src.rag.prompts import FINAL_REASONING_PROMPT, REACT_PROMPT, SYSTEM_PROMPT
 from backend.src.rag.state import AgentState
 from backend.src.rag.tools import RAG_TOOLS, get_cached_docs
@@ -22,14 +23,18 @@ from backend.src.rag.utils import (
 )
 
 logger = structlog.get_logger(__name__)
-
+settings = get_settings()
 
 class ReActRAGGraph:
     """Custom async ReAct StateGraph with dynamic agent/tool loop."""
 
     def __init__(self, model_name: str = "gpt-4o-mini") -> None:
         self.checkpointer = MemorySaver()
-        self.llm = ChatOpenAI(model=model_name, temperature=0.1)
+        self.llm = ChatOpenAI(
+            model=model_name, 
+            temperature=0.1,
+            api_key=settings.openai_api_key,
+        )
         self.tool_llm = self.llm.bind_tools(RAG_TOOLS)
         self.reasoning_llm = self.llm.with_structured_output(ReasoningOutput)
 
