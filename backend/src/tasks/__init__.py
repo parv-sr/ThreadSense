@@ -12,3 +12,5 @@ broker = ListQueueBroker(url=settings.redis_url).with_result_backend(
 
 # Ensure task registration side-effect on import.
 from backend.src.tasks import ingestion as _ingestion  # noqa: F401,E402
+from backend.src.preprocessing import tasks as _preprocessing_tasks  # noqa: F401,E402
+from backend.src.embeddings import tasks as _embedding_tasks  # noqa: F401,E402
