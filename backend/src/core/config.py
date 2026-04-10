@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     ingest_max_bytes: int = Field(default=50 * 1024 * 1024, alias="INGEST_MAX_BYTES")
     ingest_max_retries: int = Field(default=3, alias="INGEST_MAX_RETRIES")
 
+    openai_embedding_model: str = Field(default="text-embedding-3-small", alias="OPENAI_EMBEDDING_MODEL")
+    qdrant_url: str = Field(default="http://localhost:6333", alias="QDRANT_URL")
+    qdrant_api_key: str | None = Field(default=None, alias="QDRANT_API_KEY")
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

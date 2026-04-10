@@ -37,3 +37,7 @@ def import_all_models() -> None:
         RawFile,
         RawMessageChunk,
     )
+    from backend.src.models.preprocessing import (  # noqa: F401
+        ListingChunk,
+        PropertyListing,
+    )
