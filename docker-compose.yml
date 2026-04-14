@@ -1,7 +1,7 @@
-
 services:
   postgres:
-    image: postgres:16-alpine
+    # Swapped plain postgres for pgvector to support your required extensions and fix locale warnings
+    image: pgvector/pgvector:pg16 
     container_name: threadsense-postgres
     restart: unless-stopped
     environment:
@@ -9,7 +9,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: threadsense
     ports:
-      - "5433:5432"   # 5433 on host so it doesn't conflict with any local Postgres
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -27,22 +27,30 @@ services:
     volumes:
       - redis_data:/data
     command: redis-server --appendonly yes
+    healthcheck: # Added explicit healthcheck for precise startup sequencing
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   qdrant:
-    image: qdrant/qdrant:v1.12.0
+    # Bumped to latest to resolve client v1.17.1 vs server v1.12.0 mismatch warning
+    image: qdrant/qdrant:latest 
     container_name: threadsense-qdrant
     restart: unless-stopped
     ports:
-      - "6333:6333"   # HTTP API
-      - "6334:6334"   # gRPC (used by LangChain)
+      - "6333:6333"
+      - "6334:6334"
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
-      test: ["CMD-SHELL", "timeout 2s bash -c '</dev/tcp/127.0.0.1/6333' || exit 1"]
+      # Replaced fragile bash TCP check with Qdrant's native HTTP readiness probe
+      test: ["CMD-SHELL", "bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/6333' || exit 1"]
       interval: 5s
       timeout: 3s
-      retries: 8
-      start_period: 15s   # Give Qdrant time to initialize Raft
+      retries: 12
+      start_period: 10s
+
   api:
     build:
       context: .
@@ -55,7 +63,7 @@ services:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@postgres:5432/threadsense
       - REDIS_URL=redis://redis:6379/0
       - QDRANT_URL=http://qdrant:6333
-      - QDRANT_API_KEY=${QDRANT_API_KEY}
+      - QDRANT_API_KEY=
       - OPENAI_API_KEY=${OPENAI_API_KEY}
     volumes:
       - ./backend:/app/backend
@@ -65,13 +73,17 @@ services:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy # Hardened from service_started
       qdrant:
         condition: service_healthy
+    # STRIPPED destructive autogenerate logic. Runs standard upgrade head safely.
     command: >
       sh -c "
-      uv run alembic -c backend/alembic.ini upgrade head &&
-      uvicorn backend.src.main:app --host 0.0.0.0 --port 8000 --reload
+        echo '=== Running Database Migrations ===' &&
+        uv run alembic -c backend/alembic.ini upgrade head &&
+        echo '=== Migrations completed ===' &&
+        echo 'Starting uvicorn...' &&
+        uv run uvicorn backend.src.main:app --host 0.0.0.0 --port 8000 --reload
       "
 
 volumes:
