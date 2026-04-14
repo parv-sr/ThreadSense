@@ -22,7 +22,10 @@ target_metadata = Base.metadata
 # Override the sqlalchemy.url from alembic.ini with environment variable
 config.set_main_option(
     "sqlalchemy.url",
-    os.environ.get("DATABASE_URL"),
+    os.environ.get(
+        "DATABASE_URL",
+        "postgresql+asyncpg://postgres:postgres@postgres:5432/threadsense",
+    ),
 )
 
 

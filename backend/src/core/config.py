@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     openai_api_key: str = Field(..., alias="OPENAI_API_KEY")
 
     database_url: str = Field(
-        default="postgresql+asyncpg://user:password@localhost:5432/threadsense",
+        default="postgresql+asyncpg://postgres:postgres@postgres:5432/threadsense",
         alias="DATABASE_URL",
     )
 
