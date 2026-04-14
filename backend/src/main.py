@@ -11,6 +11,8 @@ from qdrant_client.http.models import Distance, VectorParams
 from backend.src.api.endpoints.chat import build_rag_agent
 from backend.src.api.main_router import api_router
 from backend.src.core.config import get_settings
+from backend.src.db.diagnostics import PROBE_SQL, mask_database_url
+from backend.src.db.session import engine
 from backend.src.tasks import broker
 
 settings = get_settings()
@@ -34,6 +36,17 @@ logger = structlog.get_logger(__name__)
 async def lifespan(app: FastAPI):
     await broker.startup()
     logger.info("taskiq_started", redis_url=settings.redis_url)
+    logger.info("database_runtime_config", database_url=mask_database_url(settings.database_url))
+
+    async with engine.connect() as conn:
+        probe_row = (await conn.execute(PROBE_SQL)).one()
+        logger.info(
+            "database_runtime_probe",
+            current_database=probe_row[0],
+            current_schema=probe_row[1],
+            inet_server_addr=str(probe_row[2]) if probe_row[2] is not None else None,
+            inet_server_port=probe_row[3],
+        )
 
     # === QDRANT COLLECTION AUTO-CREATION (pure dense vector - simple & stable) ===
     logger.info("Initializing Qdrant collection...")

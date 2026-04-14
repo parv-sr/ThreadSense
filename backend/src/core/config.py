@@ -1,12 +1,25 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import os
+from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from dotenv import load_dotenv
-load_dotenv(override=True)
+
+
+def _should_override_from_dotenv() -> bool:
+    app_env = os.getenv("APP_ENV", "dev").strip().lower()
+    is_local_env = app_env in {"dev", "local"}
+    is_container_runtime = Path("/.dockerenv").exists() or any(
+        os.getenv(key) for key in ("KUBERNETES_SERVICE_HOST", "CONTAINERIZED", "DOCKER_CONTAINER")
+    )
+    return is_local_env and not is_container_runtime
+
+
+load_dotenv(override=_should_override_from_dotenv())
 
 
 class Settings(BaseSettings):
