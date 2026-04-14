@@ -68,7 +68,11 @@ services:
         condition: service_started
       qdrant:
         condition: service_healthy
-    command: uvicorn backend.src.main:app --host 0.0.0.0 --port 8000 --reload
+    command: >
+      sh -c "
+      uv run alembic -c backend/alembic.ini upgrade head &&
+      uvicorn backend.src.main:app --host 0.0.0.0 --port 8000 --reload
+      "
 
 volumes:
   postgres_data:

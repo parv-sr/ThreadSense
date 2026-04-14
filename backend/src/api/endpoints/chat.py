@@ -22,7 +22,7 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 
 def build_rag_agent() -> RAGAgent:
-    """Build a production RAG agent connected to persistent Qdrant."""
+    """Build a production RAG agent using pure dense vectors."""
 
     qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
     qdrant_api_key = os.getenv("QDRANT_API_KEY")
@@ -32,16 +32,13 @@ def build_rag_agent() -> RAGAgent:
     logger.info("rag_agent_build_start", qdrant_url=qdrant_url, collection=collection_name)
 
     client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
-    async_client = AsyncQdrantClient(url=qdrant_url, api_key=qdrant_api_key)
+
     vector_store = QdrantVectorStore(
         client=client,
-        async_client=async_client,
         collection_name=collection_name,
         embedding=OpenAIEmbeddings(model=embedding_model),
-        sparse_embedding=FastEmbedSparse(model_name="Qdrant/bm25"),
-        retrieval_mode=RetrievalMode.HYBRID,
+        retrieval_mode=RetrievalMode.DENSE,           # ← Pure dense (simple & stable)
         vector_name="dense",
-        sparse_vector_name="sparse",
     )
 
     retriever = HybridQdrantRetriever(vector_store)

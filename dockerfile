@@ -34,6 +34,8 @@ WORKDIR /app
 
 # Copy the virtual environment from builder (much smaller final image)
 COPY --from=builder /app/.venv /app/.venv
+# Install uv in the runtime image so we can use `uv run` easily
+RUN pip install --no-cache-dir uv
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Copy source code

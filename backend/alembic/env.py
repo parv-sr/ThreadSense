@@ -24,7 +24,7 @@ config.set_main_option(
     "sqlalchemy.url",
     os.getenv(
         "DATABASE_URL",
-        "postgresql+asyncpg://user:password@localhost:5432/threadsense",
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/threadsense",
     ),
 )
 

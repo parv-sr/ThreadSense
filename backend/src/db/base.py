@@ -41,3 +41,4 @@ def import_all_models() -> None:
         ListingChunk,
         PropertyListing,
     )
+    from backend.src.models.users import User # noqa: F401

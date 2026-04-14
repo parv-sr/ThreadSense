@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 import structlog
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from qdrant_client import QdrantClient
+from qdrant_client.http.models import Distance, VectorParams
 
 from backend.src.api.endpoints.chat import build_rag_agent
 from backend.src.api.main_router import api_router
@@ -32,6 +34,36 @@ logger = structlog.get_logger(__name__)
 async def lifespan(app: FastAPI):
     await broker.startup()
     logger.info("taskiq_started", redis_url=settings.redis_url)
+
+    # === QDRANT COLLECTION AUTO-CREATION (pure dense vector - simple & stable) ===
+    logger.info("Initializing Qdrant collection...")
+
+    client = QdrantClient(
+        url=settings.qdrant_url,
+        api_key=settings.qdrant_api_key,
+        timeout=10,
+    )
+
+    COLLECTION_NAME = "threadsense_listings"
+    VECTOR_SIZE = 1536                    # text-embedding-3-small
+    DISTANCE = Distance.COSINE
+
+    # Force recreate to fix any previous hybrid/sparse configuration issues
+    if client.collection_exists(COLLECTION_NAME):
+        logger.info(f"Deleting existing collection '{COLLECTION_NAME}' to ensure clean state")
+        client.delete_collection(COLLECTION_NAME)
+
+    logger.info(f"Creating Qdrant collection '{COLLECTION_NAME}' with dense vector only")
+    client.create_collection(
+        collection_name=COLLECTION_NAME,
+        vectors_config={
+            "dense": VectorParams(
+                size=VECTOR_SIZE,
+                distance=DISTANCE,
+            )
+        },
+    )
+    logger.info(f"✅ Qdrant collection '{COLLECTION_NAME}' created successfully (dense vector only)")
 
     try:
         app.state.rag_agent = build_rag_agent()
