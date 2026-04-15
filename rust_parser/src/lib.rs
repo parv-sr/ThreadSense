@@ -8,7 +8,8 @@ use rayon::prelude::*;
 use regex::Regex;
 use std::collections::HashSet;
 use std::fs;
-use std::io::Read;
+use std::io::{ErrorKind, Read};
+use std::path::Path;
 use std::process::Command;
 use thiserror::Error;
 use uuid::Uuid;
@@ -135,12 +136,29 @@ fn parse_text(content: &str) -> PyResult<Vec<RawMessageChunkCreate>> {
     Ok(parse_content(content))
 }
 
+fn parse_bytes_impl(bytes: &[u8]) -> Vec<RawMessageChunkCreate> {
+    let decoded = decode_text(bytes);
+    parse_content(&decoded)
+}
+
+#[pyfunction]
+fn parse_bytes(content: &[u8]) -> PyResult<Vec<RawMessageChunkCreate>> {
+    init_logging();
+    Ok(parse_bytes_impl(content))
+}
+
 #[pyfunction]
 fn parse_file(file_path: &str) -> PyResult<Vec<RawMessageChunkCreate>> {
     init_logging();
+    if !Path::new(file_path).exists() {
+        return Err(ParserError::Io(std::io::Error::new(
+            ErrorKind::NotFound,
+            format!("input file not found: {file_path}"),
+        ))
+        .into());
+    }
     let bytes = fs::read(file_path).map_err(ParserError::from)?;
-    let decoded = decode_text(&bytes);
-    Ok(parse_content(&decoded))
+    Ok(parse_bytes_impl(&bytes))
 }
 
 #[pyfunction]
@@ -166,27 +184,33 @@ fn parse_zip(zip_path: &str) -> PyResult<Vec<RawMessageChunkCreate>> {
 
             let mut bytes = Vec::new();
             zf.read_to_end(&mut bytes).map_err(ParserError::from)?;
-            let decoded = decode_text(&bytes);
-            collected.extend(parse_content(&decoded));
+            collected.extend(parse_bytes_impl(&bytes));
         }
         return Ok(collected);
     }
 
     if lower.ends_with(".rar") {
-        let output = Command::new("unrar")
+        let output = match Command::new("unrar")
             .args(["p", "-inul", zip_path])
             .output()
-            .map_err(ParserError::from)?;
+        {
+            Ok(output) => output,
+            Err(err) if err.kind() == ErrorKind::NotFound => {
+                return Err(ParserError::Rar(
+                    "RAR support unavailable: `unrar` executable not found".to_string(),
+                )
+                .into());
+            }
+            Err(err) => return Err(ParserError::from(err).into()),
+        };
 
         if !output.status.success() {
-            return Err(ParserError::Rar(
-                String::from_utf8_lossy(&output.stderr).to_string(),
-            )
-            .into());
+            return Err(
+                ParserError::Rar(String::from_utf8_lossy(&output.stderr).to_string()).into(),
+            );
         }
 
-        let decoded = decode_text(&output.stdout);
-        return Ok(parse_content(&decoded));
+        return Ok(parse_bytes_impl(&output.stdout));
     }
 
     Err(ParserError::UnsupportedArchive(zip_path.to_string()).into())
@@ -201,6 +225,7 @@ fn get_parser_version() -> String {
 fn whatsapp_parser(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RawMessageChunkCreate>()?;
     m.add_function(wrap_pyfunction!(parse_text, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(parse_file, m)?)?;
     m.add_function(wrap_pyfunction!(parse_zip, m)?)?;
     m.add_function(wrap_pyfunction!(get_parser_version, m)?)?;
@@ -208,6 +233,7 @@ fn whatsapp_parser(m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 fn init_logging() {
+    dotenv::dotenv().ok();
     let _ = env_logger::builder().is_test(true).try_init();
 }
 
@@ -415,7 +441,10 @@ fn parse_datetime(date_str: &str, time_str: Option<&str>) -> DateTime<Utc> {
         }
     }
 
-    warn!("Unknown timestamp format '{}', defaulting to now()", combined);
+    warn!(
+        "Unknown timestamp format '{}', defaulting to now()",
+        combined
+    );
     Utc::now()
 }
 

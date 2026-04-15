@@ -121,8 +121,25 @@ async def ingest_raw_file_task(rawfile_id: str) -> dict[str, Any]:
                 suffix = Path(rawfile.file_name).suffix.lower()
                 if suffix in {".zip", ".rar"}:
                     parsed_rows = whatsapp_parser.parse_zip(rawfile.file)
-                elif suffix == ".txt" and rawfile.file:
-                    parsed_rows = whatsapp_parser.parse_file(rawfile.file)
+                elif suffix == ".txt":
+                    if content.strip():
+                        parsed_rows = whatsapp_parser.parse_text(content)
+                    elif rawfile.file:
+                        try:
+                            parsed_rows = whatsapp_parser.parse_file(rawfile.file)
+                        except Exception as file_exc:  # noqa: BLE001
+                            if content.strip():
+                                log.warning(
+                                    "ingestion_parse_file_fallback_to_text",
+                                    rawfile_id=str(rawfile.id),
+                                    file_path=rawfile.file,
+                                    error=str(file_exc),
+                                )
+                                parsed_rows = whatsapp_parser.parse_text(content)
+                            else:
+                                raise
+                    else:
+                        parsed_rows = whatsapp_parser.parse_text(content)
                 else:
                     parsed_rows = whatsapp_parser.parse_text(content)
             except Exception as exc:  # noqa: BLE001
