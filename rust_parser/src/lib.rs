@@ -208,6 +208,7 @@ fn whatsapp_parser(m: &Bound<'_, PyModule>) -> PyResult<()> {
 }
 
 fn init_logging() {
+    dotenv::dotenv().ok();
     let _ = env_logger::builder().is_test(true).try_init();
 }
 
