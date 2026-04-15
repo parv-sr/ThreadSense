@@ -137,10 +137,9 @@ class ExtractedListing(BaseModel):
 # ---------------------------------------------------------------------------
 
 def _build_qdrant_client() -> AsyncQdrantClient:
-    import os
     return AsyncQdrantClient(
-        url=os.getenv("QDRANT_URL", "http://localhost:6333"),
-        api_key=os.getenv("QDRANT_API_KEY"),
+        url=settings.qdrant_endpoint,
+        api_key=settings.qdrant_api_key,
     )
 
 

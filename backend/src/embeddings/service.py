@@ -18,7 +18,7 @@ QDRANT_COLLECTION = "threadsense_listings"
 class EmbeddingService:
     def __init__(self) -> None:
         self.embedding_model_name = settings.openai_embedding_model
-        self.qdrant = AsyncQdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
+        self.qdrant = AsyncQdrantClient(url=settings.qdrant_endpoint, api_key=settings.qdrant_api_key)
         self.embeddings = OpenAIEmbeddings(model=self.embedding_model_name, api_key=settings.openai_api_key)
 
     async def _vector_size(self) -> int:
