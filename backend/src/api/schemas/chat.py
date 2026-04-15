@@ -11,11 +11,9 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=6000)
     thread_id: str | None = Field(default=None, description="Optional thread UUID for memory continuity")
 
+
 class RAGResponse(BaseModel):
     """Structured chat response payload."""
-
-class ChatResponse(BaseModel):
-    """Structured RAG response payload."""
 
     table_html: str
     reasoning: str

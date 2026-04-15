@@ -7,7 +7,7 @@ from typing import Any
 
 import structlog
 from langchain_openai import ChatOpenAI
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from backend.src.core.config import get_settings
 
@@ -42,6 +42,90 @@ class ListingExtractionResult(BaseModel):
     is_verified: bool = False
     confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_aliases(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        normalized = dict(data)
+        if normalized.get("furnished") is None and normalized.get("furnishing") is not None:
+            normalized["furnished"] = normalized.get("furnishing")
+        if normalized.get("area_sqft") is None and normalized.get("carpet_area") is not None:
+            normalized["area_sqft"] = normalized.get("carpet_area")
+        if normalized.get("price") is None and normalized.get("rent") is not None:
+            normalized["price"] = normalized.get("rent")
+
+        if normalized.get("contact_number") is None and normalized.get("contact"):
+            contact = normalized.get("contact")
+            if isinstance(contact, list) and contact:
+                first = contact[0]
+                normalized["contact_number"] = first.get("phone") if isinstance(first, dict) else str(first)
+        return normalized
+
+    @field_validator("property_type", mode="before")
+    @classmethod
+    def normalize_property_type(cls, v: Any) -> ExtractionPropertyType:
+        if isinstance(v, ExtractionPropertyType):
+            return v
+        s = str(v or "").strip().upper()
+        if s in {"SALE", "SELL", "BUY", "OWNERSHIP"}:
+            return ExtractionPropertyType.SALE
+        if s in {"RENT", "LEASE", "LICENSE"}:
+            return ExtractionPropertyType.RENT
+        return ExtractionPropertyType.OTHER
+
+    @field_validator("bhk", mode="before")
+    @classmethod
+    def normalize_bhk(cls, v: Any) -> float | None:
+        if v is None or v == "":
+            return None
+        if isinstance(v, (float, int)):
+            return float(v)
+        s = str(v).strip().lower()
+        match = re.search(r"(\d+(\.\d+)?)", s)
+        if match:
+            return float(match.group(1))
+        if "studio" in s or "rk" in s:
+            return 0.5
+        return None
+
+    @field_validator("price", mode="before")
+    @classmethod
+    def normalize_price(cls, v: Any) -> int | None:
+        if v is None or v == "":
+            return None
+        if isinstance(v, int):
+            return v
+        if isinstance(v, float):
+            return int(v)
+        s = str(v).strip().lower().replace(",", "")
+        match = re.search(r"(\d+(\.\d+)?)", s)
+        if not match:
+            return None
+        value = float(match.group(1))
+        if "cr" in s or "crore" in s:
+            value *= 10_000_000
+        elif "lac" in s or "lakh" in s:
+            value *= 100_000
+        elif s.endswith("k") or " k" in s:
+            value *= 1_000
+        return int(value)
+
+    @field_validator("area_sqft", mode="before")
+    @classmethod
+    def normalize_area_sqft(cls, v: Any) -> int | None:
+        if v is None or v == "":
+            return None
+        if isinstance(v, int):
+            return v
+        if isinstance(v, float):
+            return int(v)
+        match = re.search(r"(\d+(\.\d+)?)", str(v).replace(",", ""))
+        if not match:
+            return None
+        return int(float(match.group(1)))
+
     @field_validator("contact_number", mode="before")
     @classmethod
     def normalize_phone(cls, v: Any) -> str | None:
@@ -51,6 +135,22 @@ class ListingExtractionResult(BaseModel):
         if len(digits) >= 10:
             return digits[-10:]
         return None
+
+    @field_validator("furnished", mode="before")
+    @classmethod
+    def normalize_furnished(cls, v: Any) -> ExtractionFurnished | None:
+        if v is None or v == "":
+            return None
+        if isinstance(v, ExtractionFurnished):
+            return v
+        s = str(v).strip().upper().replace("-", "_").replace(" ", "_")
+        if "FULL" in s:
+            return ExtractionFurnished.FULLY_FURNISHED
+        if "SEMI" in s:
+            return ExtractionFurnished.SEMI_FURNISHED
+        if "UNFURNISHED" in s or s == "EMPTY":
+            return ExtractionFurnished.UNFURNISHED
+        return ExtractionFurnished.UNKNOWN
 
 
 class ListingExtractor:
@@ -67,6 +167,9 @@ class ListingExtractor:
         prompt = (
             "Extract real-estate listing details from this WhatsApp message. "
             "Return JSON with fields exactly matching schema. "
+            "property_type must be one of SALE, RENT, OTHER and indicates transaction intent only. "
+            "Never use values like '2 BHK' for property_type; use bhk for bedroom count. "
+            "Map furnishing to furnished, carpet area to area_sqft, and phone to contact_number. "
             "Price must be normalized to INR rupees (e.g. 1.5 Cr => 15000000, 85k => 85000). "
             "Set confidence_score in [0.0,1.0].\n\n"
             f"Message:\n{message_text[:5000]}"
