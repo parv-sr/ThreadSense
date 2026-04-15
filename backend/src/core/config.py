@@ -3,6 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 import os
 from pathlib import Path
+from urllib.parse import urlparse, urlunparse
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -40,13 +41,32 @@ class Settings(BaseSettings):
     )
 
     redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
+    redis_token: str | None = Field(default=None, alias="REDIS_TOKEN")
     taskiq_result_ttl_seconds: int = Field(default=3600, alias="TASKIQ_RESULT_TTL_SECONDS")
     ingest_max_bytes: int = Field(default=50 * 1024 * 1024, alias="INGEST_MAX_BYTES")
     ingest_max_retries: int = Field(default=3, alias="INGEST_MAX_RETRIES")
 
     openai_embedding_model: str = Field(default="text-embedding-3-small", alias="OPENAI_EMBEDDING_MODEL")
-    qdrant_url: str = Field(default="http://localhost:6333", alias="QDRANT_URL")
+    qdrant_url: str | None = Field(default=None, alias="QDRANT_URL")
+    qdrant_cluster_endpoint: str | None = Field(default=None, alias="QDRANT_CLUSTER_ENDPOINT")
     qdrant_api_key: str | None = Field(default=None, alias="QDRANT_API_KEY")
+
+    @property
+    def qdrant_endpoint(self) -> str:
+        return (self.qdrant_cluster_endpoint or self.qdrant_url or "http://localhost:6333").strip()
+
+    @property
+    def redis_broker_url(self) -> str:
+        parsed = urlparse(self.redis_url)
+        if not self.redis_token or parsed.password:
+            return self.redis_url
+
+        username = parsed.username or ""
+        auth = f":{self.redis_token}" if not username else f"{username}:{self.redis_token}"
+        netloc = f"{auth}@{parsed.hostname or ''}"
+        if parsed.port:
+            netloc += f":{parsed.port}"
+        return urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
 
 
 @lru_cache(maxsize=1)

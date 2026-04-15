@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from functools import lru_cache
 from uuid import UUID
 
@@ -8,35 +7,34 @@ import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
 from langchain_openai import OpenAIEmbeddings
 from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
-from qdrant_client import AsyncQdrantClient, QdrantClient
+from qdrant_client import QdrantClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.src.api.dependencies import get_db_session
 from backend.src.api.schemas.chat import ChatRequest, ChatResponse, SourceResponse
 from backend.src.models.ingestion import RawMessageChunk
+from backend.src.core.config import get_settings
 from backend.src.rag.agent import RAGAgent
 from backend.src.rag.retriever import HybridQdrantRetriever
 
 logger = structlog.get_logger(__name__)
+settings = get_settings()
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
 def build_rag_agent() -> RAGAgent:
     """Build a production RAG agent using pure dense vectors."""
 
-    qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
-    qdrant_api_key = os.getenv("QDRANT_API_KEY")
-    collection_name = os.getenv("QDRANT_COLLECTION", "threadsense_listings")
-    embedding_model = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+    collection_name = "threadsense_listings"
 
-    logger.info("rag_agent_build_start", qdrant_url=qdrant_url, collection=collection_name)
+    logger.info("rag_agent_build_start", qdrant_url=settings.qdrant_endpoint, collection=collection_name)
 
-    client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
+    client = QdrantClient(url=settings.qdrant_endpoint, api_key=settings.qdrant_api_key)
 
     vector_store = QdrantVectorStore(
         client=client,
         collection_name=collection_name,
-        embedding=OpenAIEmbeddings(model=embedding_model),
+        embedding=OpenAIEmbeddings(model=settings.openai_embedding_model),
         retrieval_mode=RetrievalMode.DENSE,           # ← Pure dense (simple & stable)
         vector_name="dense",
     )
