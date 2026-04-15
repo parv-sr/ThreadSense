@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { CheckCircle2, Loader2 } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Loader2 } from 'lucide-react'
+import { formatDistanceToNow } from 'date-fns'
 import { toast } from 'sonner'
 import { UploadDropzone } from '@/components/upload/upload-dropzone'
 import { Card } from '@/components/ui/card'
@@ -34,15 +35,22 @@ export const UploadsPage = () => {
   return (
     <section className='space-y-6'>
       <div>
-        <h1 className='text-2xl font-semibold'>Uploads</h1>
-        <p className='text-sm text-slate-400'>Ingest new conversation exports and track deduplication.</p>
+        <h1 className='text-2xl font-semibold tracking-tight'>Uploads</h1>
+        <p className='text-sm text-slate-400'>Ingest conversation exports and track deduplication in real time.</p>
       </div>
+
       <UploadDropzone onFileSelect={handleUpload} />
+
+      {ingestMutation.isError ? (
+        <div className='flex items-center gap-2 rounded-xl border border-red-400/20 bg-red-500/10 px-3 py-2 text-sm text-red-200'>
+          <AlertTriangle className='h-4 w-4' /> Could not call /ingest/. Please verify API availability.
+        </div>
+      ) : null}
 
       <div className='grid gap-4 md:grid-cols-2'>
         <Card className='p-4'>
           <p className='text-sm text-slate-400'>Unique uploads</p>
-          <p className='text-3xl font-bold text-emerald-400'>{stats.uploaded}</p>
+          <p className='text-3xl font-bold text-emerald-300'>{stats.uploaded}</p>
         </Card>
         <Card className='p-4'>
           <p className='text-sm text-slate-400'>Duplicates skipped</p>
@@ -52,15 +60,18 @@ export const UploadsPage = () => {
 
       <Card className='p-4'>
         <h2 className='mb-3 text-lg font-semibold'>Recent Upload Activity</h2>
-        {ingestMutation.isPending && <Loader2 className='h-4 w-4 animate-spin text-emerald-400' />}
+        {ingestMutation.isPending ? <Loader2 className='h-4 w-4 animate-spin text-cyan-200' /> : null}
         {events.length === 0 ? (
           <p className='text-sm text-slate-400'>No uploads yet.</p>
         ) : (
           <div className='space-y-2'>
             {events.map((event) => (
-              <div key={event.id} className='flex items-center justify-between rounded-md bg-slate-800/70 p-3 text-sm'>
-                <span>{event.name}</span>
-                <span className='flex items-center gap-2 text-slate-300'><CheckCircle2 className='h-4 w-4 text-emerald-400' /> {event.status}</span>
+              <div key={event.id} className='glass-muted flex items-center justify-between rounded-xl p-3 text-sm transition hover:-translate-y-0.5'>
+                <span className='truncate pr-3'>{event.name}</span>
+                <span className='flex shrink-0 items-center gap-2 text-slate-300'>
+                  <CheckCircle2 className='h-4 w-4 text-emerald-300' />
+                  {event.status} · {formatDistanceToNow(new Date(event.time), { addSuffix: true })}
+                </span>
               </div>
             ))}
           </div>

@@ -63,7 +63,7 @@ export const useSourceQuery = (chunkId?: string, enabled = true) =>
     queryKey: ['source', chunkId],
     enabled: Boolean(chunkId) && enabled,
     queryFn: async () => {
-      const { data } = await api.get<SourceChunk>(`/chat/source/${chunkId}`)
+      const { data } = await api.get<SourceChunk>(`/source/${chunkId}`)
       return data
     },
   })
