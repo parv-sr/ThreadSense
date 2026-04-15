@@ -6,7 +6,7 @@ from backend.src.core.config import get_settings
 
 settings = get_settings()
 
-broker = ListQueueBroker(url=settings.redis_broker_url).with_result_backend(
+broker = ListQueueBroker(url=settings.redis_url).with_result_backend(
     RedisAsyncResultBackend(redis_url=settings.redis_broker_url, result_ex_time=settings.taskiq_result_ttl_seconds)
 )
 

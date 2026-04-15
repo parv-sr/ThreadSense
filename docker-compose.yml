@@ -29,5 +29,30 @@ services:
         uv run uvicorn backend.src.main:app --host 0.0.0.0 --port 8000
       "
 
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: threadsense-worker
+    restart: unless-stopped
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      DEBUG: ${DEBUG:-false}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      REDIS_TOKEN: ${REDIS_TOKEN}
+      QDRANT_URL: ${QDRANT_URL}
+      QDRANT_API_KEY: ${QDRANT_API_KEY}
+      OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+    volumes:
+      - ./backend:/app/backend
+      - ./rust_parser:/app/rust_parser
+      - uploads:/app/uploads
+    depends_on:
+      - api 
+    command: >
+      sh -c "uv run taskiq worker backend.src.tasks:broker --workers 4 --max-async-tasks 100"
+
 volumes:
   uploads:

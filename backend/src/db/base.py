@@ -11,8 +11,7 @@ class Base(DeclarativeBase):
     pass
 
 DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://postgres:postgres@postgres:5432/threadsense",
+    "DATABASE_URL"
 )
 
 engine: AsyncEngine = create_async_engine(

@@ -14,6 +14,7 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from backend.src.db.session import AsyncSessionLocal
 from backend.src.models.ingestion import RawFile, RawFileStatus, RawMessageChunk
+from backend.src.models.users import User
 from backend.src.tasks import broker
 
 log = structlog.get_logger(__name__)

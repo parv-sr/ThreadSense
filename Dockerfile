@@ -35,6 +35,7 @@ ENV PATH="/app/.venv/bin:$PATH"
 COPY backend ./backend
 COPY rust_parser ./rust_parser
 
+
 RUN mkdir -p /app/uploads
 
 EXPOSE 8000
