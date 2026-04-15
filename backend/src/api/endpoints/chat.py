@@ -6,14 +6,15 @@ from uuid import UUID
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
 from langchain_openai import OpenAIEmbeddings
-from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
+from langchain_qdrant import QdrantVectorStore, RetrievalMode
 from qdrant_client import QdrantClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.src.api.dependencies import get_db_session
 from backend.src.api.schemas.chat import ChatRequest, ChatResponse, SourceResponse
-from backend.src.models.ingestion import RawMessageChunk
 from backend.src.core.config import get_settings
+from backend.src.embeddings.constants import QDRANT_COLLECTION, QDRANT_VECTOR_NAME
+from backend.src.models.ingestion import RawMessageChunk
 from backend.src.rag.agent import RAGAgent
 from backend.src.rag.retriever import HybridQdrantRetriever
 
@@ -24,19 +25,16 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 def build_rag_agent() -> RAGAgent:
     """Build a production RAG agent using pure dense vectors."""
-
-    collection_name = "threadsense_listings"
-
-    logger.info("rag_agent_build_start", qdrant_url=settings.qdrant_endpoint, collection=collection_name)
+    logger.info("rag_agent_build_start", qdrant_url=settings.qdrant_endpoint, collection=QDRANT_COLLECTION)
 
     client = QdrantClient(url=settings.qdrant_endpoint, api_key=settings.qdrant_api_key)
 
     vector_store = QdrantVectorStore(
         client=client,
-        collection_name=collection_name,
+        collection_name=QDRANT_COLLECTION,
         embedding=OpenAIEmbeddings(model=settings.openai_embedding_model),
         retrieval_mode=RetrievalMode.DENSE,           # ← Pure dense (simple & stable)
-        vector_name="dense",
+        vector_name=QDRANT_VECTOR_NAME,
     )
 
     retriever = HybridQdrantRetriever(vector_store)

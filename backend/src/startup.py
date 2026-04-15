@@ -9,12 +9,11 @@ from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams
 
 from backend.src.core.config import get_settings
+from backend.src.embeddings.constants import QDRANT_COLLECTION, QDRANT_VECTOR_NAME
 
 logger = structlog.get_logger(__name__)
 settings = get_settings()
 
-COLLECTION_NAME = "threadsense_listings"
-VECTOR_NAME = "dense"
 VECTOR_SIZE = 1536
 
 
@@ -37,20 +36,42 @@ def ensure_qdrant_collection() -> None:
         timeout=10,
     )
     try:
-        if client.collection_exists(COLLECTION_NAME):
-            logger.info("startup_qdrant_collection_exists", collection=COLLECTION_NAME)
+        if client.collection_exists(QDRANT_COLLECTION):
+            info = client.get_collection(QDRANT_COLLECTION)
+            vectors_cfg = getattr(info.config.params, "vectors", None)
+            configured_names: set[str] = set()
+            if isinstance(vectors_cfg, dict):
+                configured_names = set(vectors_cfg.keys())
+            elif vectors_cfg is not None:
+                # Single unnamed vector config should be rejected for this app.
+                configured_names = {""}
+
+            if QDRANT_VECTOR_NAME not in configured_names:
+                raise RuntimeError(
+                    "Qdrant collection exists with incompatible vector schema. "
+                    f"Expected named vector '{QDRANT_VECTOR_NAME}', found {sorted(configured_names)}."
+                )
+            logger.info(
+                "startup_qdrant_collection_exists",
+                collection=QDRANT_COLLECTION,
+                vector_name=QDRANT_VECTOR_NAME,
+            )
             return
 
         client.create_collection(
-            collection_name=COLLECTION_NAME,
+            collection_name=QDRANT_COLLECTION,
             vectors_config={
-                VECTOR_NAME: VectorParams(
+                QDRANT_VECTOR_NAME: VectorParams(
                     size=VECTOR_SIZE,
                     distance=Distance.COSINE,
                 )
             },
         )
-        logger.info("startup_qdrant_collection_created", collection=COLLECTION_NAME)
+        logger.info(
+            "startup_qdrant_collection_created",
+            collection=QDRANT_COLLECTION,
+            vector_name=QDRANT_VECTOR_NAME,
+        )
     finally:
         client.close()
 

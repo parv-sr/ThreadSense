@@ -1,24 +1,27 @@
 from __future__ import annotations
 
-import os
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
 from typing import AsyncGenerator
+from backend.src.core.config import get_settings
 
 class Base(DeclarativeBase):
     """Base class for all models."""
     pass
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL"
-)
+settings = get_settings()
+DATABASE_URL = settings.database_url
 
 engine: AsyncEngine = create_async_engine(
     DATABASE_URL,
     future=True,
     pool_pre_ping=True,
-    echo=False,  # set True only in dev if needed
+    echo=settings.debug,
+    pool_size=settings.db_pool_size,
+    max_overflow=settings.db_max_overflow,
+    pool_timeout=settings.db_pool_timeout_seconds,
+    pool_recycle=settings.db_pool_recycle_seconds,
 )
 
 AsyncSessionLocal = async_sessionmaker(

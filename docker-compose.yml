@@ -52,7 +52,7 @@ services:
     depends_on:
       - api 
     command: >
-      sh -c "uv run taskiq worker backend.src.tasks:broker --workers 4 --max-async-tasks 100"
+      sh -c "uv run taskiq worker backend.src.tasks:broker --workers 2 --max-async-tasks 20"
 
 volumes:
   uploads:
