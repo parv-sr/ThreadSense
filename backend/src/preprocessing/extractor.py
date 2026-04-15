@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from enum import StrEnum
-from typing import Any
+from typing import Any, Sequence
 
 import structlog
 from langchain_openai import ChatOpenAI
@@ -14,11 +15,19 @@ from backend.src.core.config import get_settings
 log = structlog.get_logger(__name__)
 settings = get_settings()
 
+MESSAGES_PER_PACKET = int(os.getenv("MESSAGES_PER_PACKET", "15"))
+MAX_CONCURRENT_PACKETS = max(3, int(os.getenv("MAX_CONCURRENT_PACKETS", "6")) )
+
 
 class ExtractionPropertyType(StrEnum):
     SALE = "SALE"
     RENT = "RENT"
     OTHER = "OTHER"
+
+
+class ExtractionListingIntent(StrEnum):
+    OFFER = "OFFER"
+    REQUEST = "REQUEST"
 
 
 class ExtractionFurnished(StrEnum):
@@ -29,7 +38,10 @@ class ExtractionFurnished(StrEnum):
 
 
 class ListingExtractionResult(BaseModel):
+    """Canonical extractor output mapped to v2 DB columns."""
+
     property_type: ExtractionPropertyType = Field(default=ExtractionPropertyType.OTHER)
+    listing_intent: ExtractionListingIntent = Field(default=ExtractionListingIntent.OFFER)
     bhk: float | None = Field(default=None)
     price: int | None = Field(default=None, description="Normalized full rupee amount")
     location: str | None = None
@@ -40,6 +52,7 @@ class ListingExtractionResult(BaseModel):
     area_sqft: int | None = None
     landmark: str | None = None
     is_verified: bool = False
+    is_irrelevant: bool = False
     confidence_score: float = Field(default=0.0, ge=0.0, le=1.0)
 
     @model_validator(mode="before")
@@ -154,11 +167,103 @@ class ListingExtractionResult(BaseModel):
 
 
 class ListingExtractor:
-    def __init__(self, *, max_retries: int = 3, rate_limit_concurrency: int = 5) -> None:
+    def __init__(
+        self,
+        *,
+        max_retries: int = 3,
+        messages_per_packet: int = MESSAGES_PER_PACKET,
+        max_concurrent_packets: int = MAX_CONCURRENT_PACKETS,
+    ) -> None:
         self.max_retries = max_retries
-        self._semaphore = asyncio.Semaphore(rate_limit_concurrency)
-        self._model = ChatOpenAI(model="gpt-4o-mini", temperature=0.0, api_key=settings.openai_api_key)
-        self._structured_model = self._model.with_structured_output(ListingExtractionResult, method="json_mode")
+        self.messages_per_packet = max(1, messages_per_packet)
+        self.max_concurrent_packets = max(1, max_concurrent_packets)
+        self._semaphore = asyncio.Semaphore(self.max_concurrent_packets)
+        self._system_prompt = _build_system_prompt()
+
+        self._model = ChatOpenAI(
+            model="gpt-4o-mini",
+            temperature=0.0,
+            api_key=settings.openai_api_key,
+        )
+        self._structured_model = self._model.with_structured_output(BatchEnvelope, method="json_mode")
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=8),
+        retry=retry_if_exception_type(Exception),
+        reraise=True,
+    )
+    async def _invoke_packet(self, packet_messages: Sequence[str]) -> BatchEnvelope:
+        prompt_user = construct_batch_prompt(packet_messages)
+        full_prompt = f"SYSTEM INSTRUCTIONS:\n{self._system_prompt}\n\nUSER INPUT:\n{prompt_user}"
+        async with self._semaphore:
+            return await self._structured_model.ainvoke(full_prompt)
+
+    async def _process_packet(
+        self,
+        packet_messages: Sequence[str],
+        *,
+        start_global_index: int,
+    ) -> list[tuple[int, ListingExtractionResult | None, str | None]]:
+        try:
+            envelope = await self._invoke_packet(packet_messages)
+            results_map = {item.message_index: item for item in envelope.results}
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "preprocess_packet_failed",
+                start_global_index=start_global_index,
+                packet_size=len(packet_messages),
+                error=str(exc),
+            )
+            return [(start_global_index + i, None, None) for i in range(len(packet_messages))]
+
+        packet_outputs: list[tuple[int, ListingExtractionResult | None, str | None]] = []
+        for local_idx in range(len(packet_messages)):
+            global_idx = start_global_index + local_idx
+            item = results_map.get(local_idx)
+            if item is None:
+                packet_outputs.append((global_idx, None, None))
+                continue
+
+            raw_item = item.model_dump_json()
+            if item.is_irrelevant or not item.listings:
+                packet_outputs.append((global_idx, None, raw_item))
+                continue
+
+            best = max(item.listings, key=lambda x: x.confidence_score)
+            if best.is_irrelevant:
+                packet_outputs.append((global_idx, None, raw_item))
+                continue
+
+            packet_outputs.append((global_idx, best, raw_item))
+        return packet_outputs
+
+    async def extract_many(self, message_texts: Sequence[str]) -> list[tuple[ListingExtractionResult | None, str | None]]:
+        if not message_texts:
+            return []
+
+        packets: list[tuple[int, Sequence[str]]] = []
+        for i in range(0, len(message_texts), self.messages_per_packet):
+            packets.append((i, message_texts[i : i + self.messages_per_packet]))
+
+        tasks = [
+            self._process_packet(packet_messages, start_global_index=start_idx)
+            for start_idx, packet_messages in packets
+        ]
+        nested = await asyncio.gather(*tasks)
+
+        flattened: list[tuple[int, ListingExtractionResult | None, str | None]] = [
+            item for packet in nested for item in packet
+        ]
+        flattened.sort(key=lambda x: x[0])
+
+        results: list[tuple[ListingExtractionResult | None, str | None]] = [
+            (None, None) for _ in range(len(message_texts))
+        ]
+        for idx, extracted, raw_output in flattened:
+            if 0 <= idx < len(results):
+                results[idx] = (extracted, raw_output)
+        return results
 
     async def extract(self, message_text: str) -> tuple[ListingExtractionResult | None, str | None]:
         if not message_text.strip():
@@ -201,6 +306,8 @@ def to_embedding_text(extraction: ListingExtractionResult, original_text: str) -
     fields: list[str] = []
     if extraction.property_type:
         fields.append(f"Type: {extraction.property_type}")
+    if extraction.listing_intent:
+        fields.append(f"Intent: {extraction.listing_intent}")
     if extraction.bhk is not None:
         fields.append(f"BHK: {extraction.bhk}")
     if extraction.price is not None:
