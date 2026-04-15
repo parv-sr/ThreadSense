@@ -8,8 +8,7 @@ from typing import Any, Sequence
 
 import structlog
 from langchain_openai import ChatOpenAI
-from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from backend.src.core.config import get_settings
 
@@ -63,52 +62,30 @@ class ListingExtractionResult(BaseModel):
             return data
 
         normalized = dict(data)
-        alias_map = {
-            "furnishing": "furnished",
-            "carpet_area": "area_sqft",
-            "sqft": "area_sqft",
-            "rent": "price",
-            "amount": "price",
-            "phone": "contact_number",
-            "phone_number": "contact_number",
-            "mobile": "contact_number",
-            "verified": "is_verified",
-        }
-
-        for source_key, target_key in alias_map.items():
-            if normalized.get(target_key) is None and normalized.get(source_key) is not None:
-                normalized[target_key] = normalized.get(source_key)
+        if normalized.get("furnished") is None and normalized.get("furnishing") is not None:
+            normalized["furnished"] = normalized.get("furnishing")
+        if normalized.get("area_sqft") is None and normalized.get("carpet_area") is not None:
+            normalized["area_sqft"] = normalized.get("carpet_area")
+        if normalized.get("price") is None and normalized.get("rent") is not None:
+            normalized["price"] = normalized.get("rent")
 
         if normalized.get("contact_number") is None and normalized.get("contact"):
             contact = normalized.get("contact")
             if isinstance(contact, list) and contact:
                 first = contact[0]
                 normalized["contact_number"] = first.get("phone") if isinstance(first, dict) else str(first)
-
         return normalized
-
-    @field_validator("listing_intent", mode="before")
-    @classmethod
-    def normalize_listing_intent(cls, v: Any, info: ValidationInfo) -> ExtractionListingIntent:
-        raw_text = str((info.data or {}).get("location") or "")
-        merged = f"{str(v or '')} {raw_text}".lower()
-        if any(term in merged for term in ["looking", "require", "need", "want", "requirement"]):
-            return ExtractionListingIntent.REQUEST
-        if str(v or "").upper().strip() in {"REQUEST", "REQUIREMENT", "LOOKING"}:
-            return ExtractionListingIntent.REQUEST
-        return ExtractionListingIntent.OFFER
 
     @field_validator("property_type", mode="before")
     @classmethod
-    def normalize_property_type(cls, v: Any, info: ValidationInfo) -> ExtractionPropertyType:
+    def normalize_property_type(cls, v: Any) -> ExtractionPropertyType:
         if isinstance(v, ExtractionPropertyType):
             return v
-
-        merged = f"{str(v or '')} {str((info.data or {}).get('listing_intent') or '')}".upper()
-        if any(token in merged for token in ["RENT", "LEASE", "LEAVE & LICENSE", "L&L"]):
-            return ExtractionPropertyType.RENT
-        if any(token in merged for token in ["SALE", "SELL", "BUY", "OWNERSHIP"]):
+        s = str(v or "").strip().upper()
+        if s in {"SALE", "SELL", "BUY", "OWNERSHIP"}:
             return ExtractionPropertyType.SALE
+        if s in {"RENT", "LEASE", "LICENSE"}:
+            return ExtractionPropertyType.RENT
         return ExtractionPropertyType.OTHER
 
     @field_validator("bhk", mode="before")
@@ -119,10 +96,12 @@ class ListingExtractionResult(BaseModel):
         if isinstance(v, (float, int)):
             return float(v)
         s = str(v).strip().lower()
+        match = re.search(r"(\d+(\.\d+)?)", s)
+        if match:
+            return float(match.group(1))
         if "studio" in s or "rk" in s:
             return 0.5
-        match = re.search(r"(\d+(?:\.\d+)?)", s)
-        return float(match.group(1)) if match else None
+        return None
 
     @field_validator("price", mode="before")
     @classmethod
@@ -133,8 +112,8 @@ class ListingExtractionResult(BaseModel):
             return v
         if isinstance(v, float):
             return int(v)
-        s = str(v).lower().replace(",", "").strip()
-        match = re.search(r"(\d+(?:\.\d+)?)", s)
+        s = str(v).strip().lower().replace(",", "")
+        match = re.search(r"(\d+(\.\d+)?)", s)
         if not match:
             return None
         value = float(match.group(1))
@@ -155,8 +134,10 @@ class ListingExtractionResult(BaseModel):
             return v
         if isinstance(v, float):
             return int(v)
-        match = re.search(r"(\d+(?:\.\d+)?)", str(v).replace(",", ""))
-        return int(float(match.group(1))) if match else None
+        match = re.search(r"(\d+(\.\d+)?)", str(v).replace(",", ""))
+        if not match:
+            return None
+        return int(float(match.group(1)))
 
     @field_validator("contact_number", mode="before")
     @classmethod
@@ -180,107 +161,9 @@ class ListingExtractionResult(BaseModel):
             return ExtractionFurnished.FULLY_FURNISHED
         if "SEMI" in s:
             return ExtractionFurnished.SEMI_FURNISHED
-        if "UNFURNISHED" in s or "EMPTY" in s:
+        if "UNFURNISHED" in s or s == "EMPTY":
             return ExtractionFurnished.UNFURNISHED
         return ExtractionFurnished.UNKNOWN
-
-
-class BatchItemResult(BaseModel):
-    message_index: int = Field(..., description="Local packet index from 0..N")
-    listings: list[ListingExtractionResult] = Field(default_factory=list)
-    is_irrelevant: bool = Field(default=False)
-
-
-class BatchEnvelope(BaseModel):
-    results: list[BatchItemResult] = Field(default_factory=list)
-
-
-def _build_system_prompt() -> str:
-    return """
-You are ThreadSense v2's primary real-estate extraction engine for WhatsApp chats.
-You MUST be precise, conservative, and schema-compliant.
-
-OUTPUT CONTRACT (STRICT):
-- Return a JSON object with key "results".
-- "results" is a list where each entry corresponds to one input message index.
-- Each entry must have: message_index, listings[], is_irrelevant.
-- If message has no usable listing signal, set is_irrelevant=true and listings=[].
-
-FOR EACH LISTING IN listings[]:
-- property_type: one of SALE, RENT, OTHER.
-- listing_intent: OFFER or REQUEST.
-- bhk: numeric (studio/RK => 0.5), else null.
-- price: integer INR only (normalized).
-- location: concise locality/building hint, null if absent.
-- contact_number: single best phone number (last 10 digits), else null.
-- furnished: FULLY_FURNISHED | SEMI_FURNISHED | UNFURNISHED | UNKNOWN | null.
-- floor_number, total_floors, area_sqft: integers when present.
-- landmark: nearby marker if present.
-- is_verified: true only if explicit markers like "verified", "RERA", "owner confirmed".
-- is_irrelevant: true only if non-listing or too little signal.
-- confidence_score in [0,1].
-
-CLASSIFICATION RULES:
-1) listing_intent
-- REQUEST if user is seeking property ("looking for", "need", "requirement", "wanted").
-- OFFER if user is advertising availability.
-
-2) property_type
-- RENT for rent/lease/license language.
-- SALE for buy/sell/ownership/outright price language.
-- OTHER for ambiguous/general ads or when only requirement intent appears.
-
-PRICE NORMALIZATION (MANDATORY):
-- 1.5 Cr / 1.5 Crore => 15000000
-- 85k / 85 K => 85000
-- 2.25 lac / 2.25 lakh => 225000
-- Keep integer rupees only.
-- If only deposit is present and no rent/sale amount, do not hallucinate main price.
-
-PHONE EXTRACTION RULES:
-- Prefer explicit phone numbers (with +91 allowed), normalize to last 10 digits.
-- Ignore broker IDs, unit numbers, tower numbers.
-- If multiple phones exist, choose the most likely contact number for this listing.
-
-TEXT CLEANING RULES:
-- Ignore emojis, greetings, hashtags, agent signatures, repetitive fluff.
-- Keep only extraction-worthy facts.
-
-IRRELEVANCE RULES (set is_irrelevant=true):
-- greetings, jokes, social chatter, festival wishes.
-- only "call me", "available", "ok" without property details.
-- legal/finance chatter without specific listing.
-
-CONFIDENCE GUIDANCE:
-- 0.90-1.00: clear transaction + location + price and/or contact.
-- 0.70-0.89: most fields present, minor ambiguity.
-- 0.40-0.69: weak listing clues; incomplete details.
-- 0.00-0.39: likely irrelevant/noisy.
-
-GOOD EXAMPLES:
-- "2 BHK fully furnished for rent in Bandra West 85k call +91 98xxxxxx" => OFFER, RENT, bhk=2, price=85000.
-- "Need 1bhk in Andheri budget 45k" => REQUEST, OTHER, price=45000.
-- "Office space for sale at BKC 3.2 Cr" => OFFER, SALE, price=32000000.
-
-BAD EXTRACTION BEHAVIOR TO AVOID:
-- Never put "2 BHK" into property_type.
-- Never output strings for numeric fields if a numeric conversion is possible.
-- Never fabricate location/contact/price.
-- Never skip message indices.
-
-You must comply with the schema exactly.
-""".strip()
-
-
-def construct_batch_prompt(messages: Sequence[str]) -> str:
-    lines = [
-        "Extract listings from the numbered messages below.",
-        "Return ONLY valid JSON with top-level key 'results'.",
-    ]
-    for i, msg in enumerate(messages):
-        safe_msg = (msg or "").strip()[:3000]
-        lines.append(f"--- Message {i} ---\\n{safe_msg}")
-    return "\n\n".join(lines)
 
 
 class ListingExtractor:
@@ -385,7 +268,38 @@ class ListingExtractor:
     async def extract(self, message_text: str) -> tuple[ListingExtractionResult | None, str | None]:
         if not message_text.strip():
             return None, ""
-        return (await self.extract_many([message_text]))[0]
+
+        prompt = (
+            "Extract real-estate listing details from this WhatsApp message. "
+            "Return JSON with fields exactly matching schema. "
+            "property_type must be one of SALE, RENT, OTHER and indicates transaction intent only. "
+            "Never use values like '2 BHK' for property_type; use bhk for bedroom count. "
+            "Map furnishing to furnished, carpet area to area_sqft, and phone to contact_number. "
+            "Price must be normalized to INR rupees (e.g. 1.5 Cr => 15000000, 85k => 85000). "
+            "Set confidence_score in [0.0,1.0].\n\n"
+            f"Message:\n{message_text[:5000]}"
+        )
+
+        raw_llm_output: str | None = None
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                async with self._semaphore:
+                    result = await self._structured_model.ainvoke(prompt)
+                raw_llm_output = result.model_dump_json()
+                return result, raw_llm_output
+            except Exception as exc:  # noqa: BLE001
+                delay_s = 2 ** (attempt - 1)
+                log.warning(
+                    "preprocess_extract_attempt_failed",
+                    attempt=attempt,
+                    max_retries=self.max_retries,
+                    delay_seconds=delay_s,
+                    error=str(exc),
+                )
+                if attempt >= self.max_retries:
+                    return None, raw_llm_output
+                await asyncio.sleep(delay_s)
+        return None, raw_llm_output
 
 
 def to_embedding_text(extraction: ListingExtractionResult, original_text: str) -> str:

@@ -27,10 +27,8 @@ class PreprocessingPipeline:
         extracted_count = 0
         failed_count = 0
 
-        message_texts = [(chunk.cleaned_text or chunk.raw_text) for chunk in raw_chunks]
-        batch_results = await self.extractor.extract_many(message_texts)
-
-        for chunk, (extracted, raw_output) in zip(raw_chunks, batch_results):
+        for chunk in raw_chunks:
+            extracted, raw_output = await self.extractor.extract(chunk.cleaned_text or chunk.raw_text)
 
             if extracted is None:
                 log.warning(
