@@ -7,13 +7,11 @@ from langchain_openai import OpenAIEmbeddings
 from qdrant_client import AsyncQdrantClient, models as qmodels
 
 from backend.src.core.config import get_settings
+from backend.src.embeddings.constants import QDRANT_COLLECTION, QDRANT_VECTOR_NAME
 from backend.src.models.preprocessing import PropertyListing
 
 log = structlog.get_logger(__name__)
 settings = get_settings()
-
-QDRANT_COLLECTION = "threadsense_listings"
-
 
 class EmbeddingService:
     def __init__(self) -> None:
@@ -29,10 +27,23 @@ class EmbeddingService:
         collections = await self.qdrant.get_collections()
         existing = {c.name for c in collections.collections}
         if QDRANT_COLLECTION in existing:
+            info = await self.qdrant.get_collection(QDRANT_COLLECTION)
+            vectors_cfg = getattr(info.config.params, "vectors", None)
+            vector_names: set[str] = set(vectors_cfg.keys()) if isinstance(vectors_cfg, dict) else {""}
+            if QDRANT_VECTOR_NAME not in vector_names:
+                raise RuntimeError(
+                    "Qdrant collection vector schema mismatch. "
+                    f"Expected '{QDRANT_VECTOR_NAME}', found {sorted(vector_names)}."
+                )
             return
         await self.qdrant.create_collection(
             collection_name=QDRANT_COLLECTION,
-            vectors_config=qmodels.VectorParams(size=await self._vector_size(), distance=qmodels.Distance.COSINE),
+            vectors_config={
+                QDRANT_VECTOR_NAME: qmodels.VectorParams(
+                    size=await self._vector_size(),
+                    distance=qmodels.Distance.COSINE,
+                )
+            },
         )
         log.info("qdrant_collection_created", collection=QDRANT_COLLECTION)
 
@@ -70,7 +81,13 @@ class EmbeddingService:
         }
         await self.qdrant.upsert(
             collection_name=QDRANT_COLLECTION,
-            points=[qmodels.PointStruct(id=point_id, vector=vector, payload=payload)],
+            points=[
+                qmodels.PointStruct(
+                    id=point_id,
+                    vector={QDRANT_VECTOR_NAME: vector},
+                    payload=payload,
+                )
+            ],
         )
 
     async def close(self) -> None:

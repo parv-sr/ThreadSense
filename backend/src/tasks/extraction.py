@@ -12,6 +12,7 @@ from qdrant_client import AsyncQdrantClient, models as qmodels
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.src.embeddings.constants import QDRANT_COLLECTION, QDRANT_VECTOR_NAME
 from backend.src.db.session import AsyncSessionLocal
 from backend.src.models.ingestion import RawMessageChunk, RawMessageChunkStatus
 from backend.src.tasks import broker
@@ -22,7 +23,6 @@ settings = get_settings()
 
 # --- Constants ---
 BATCH_SIZE = 50
-QDRANT_COLLECTION = "threadsense_listings"
 
 
 # ---------------------------------------------------------------------------
@@ -146,12 +146,23 @@ def _build_qdrant_client() -> AsyncQdrantClient:
 async def _ensure_collection(client: AsyncQdrantClient, collection: str) -> None:
     """Create the Qdrant collection if it does not exist yet."""
     existing = {c.name for c in (await client.get_collections()).collections}
-    if collection not in existing:
-        await client.create_collection(
-            collection_name=collection,
-            vectors_config=qmodels.VectorParams(size=1536, distance=qmodels.Distance.COSINE),
-        )
-        log.info("qdrant_collection_created", collection=collection)
+    if collection in existing:
+        info = await client.get_collection(collection)
+        vectors_cfg = getattr(info.config.params, "vectors", None)
+        vector_names = set(vectors_cfg.keys()) if isinstance(vectors_cfg, dict) else {""}
+        if QDRANT_VECTOR_NAME not in vector_names:
+            raise RuntimeError(
+                f"Collection {collection} has incompatible vectors {sorted(vector_names)}; "
+                f"expected named vector '{QDRANT_VECTOR_NAME}'."
+            )
+        return
+    await client.create_collection(
+        collection_name=collection,
+        vectors_config={
+            QDRANT_VECTOR_NAME: qmodels.VectorParams(size=1536, distance=qmodels.Distance.COSINE)
+        },
+    )
+    log.info("qdrant_collection_created", collection=collection)
 
 
 async def _extract_single_chunk(
@@ -227,7 +238,7 @@ async def _process_batch(
         points.append(
             qmodels.PointStruct(
                 id=str(uuid.uuid4()),
-                vector=vector,
+                vector={QDRANT_VECTOR_NAME: vector},
                 payload=payload,
             )
         )

@@ -27,24 +27,31 @@ class PreprocessingPipeline:
         extracted_count = 0
         failed_count = 0
 
-        for chunk in raw_chunks:
+        message_texts = [(chunk.cleaned_text or chunk.raw_text) for chunk in raw_chunks]
+        batch_results = await self.extractor.extract_many(message_texts)
+
+        for chunk, (extracted, raw_output) in zip(raw_chunks, batch_results):
+
+            if extracted is None:
+                log.warning(
+                    "preprocess_extract_failed",
+                    chunk_id=str(chunk.id),
+                    rawfile_id=str(chunk.rawfile_id),
+                    llm_output_preview=(raw_output or "")[:500],
+                )
+                chunk.status = RawMessageChunkStatus.ERROR
+                failed_count += 1
+                continue
+
             listing = PropertyListing(
                 raw_chunk_id=chunk.id,
                 sender=chunk.sender,
                 timestamp=chunk.message_start,
                 status=ListingStatus.PENDING,
+                raw_llm_output=raw_output,
             )
             session.add(listing)
             await session.flush()
-
-            extracted, raw_output = await self.extractor.extract(chunk.cleaned_text or chunk.raw_text)
-            listing.raw_llm_output = raw_output
-
-            if extracted is None:
-                listing.status = ListingStatus.FAILED
-                chunk.status = RawMessageChunkStatus.ERROR
-                failed_count += 1
-                continue
 
             listing.property_type = extracted.property_type
             listing.bhk = extracted.bhk
