@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from uuid import UUID
 
@@ -27,8 +28,26 @@ class PreprocessingPipeline:
         extracted_count = 0
         failed_count = 0
 
-        for chunk in raw_chunks:
-            extracted, raw_output = await self.extractor.extract(chunk.cleaned_text or chunk.raw_text)
+        log.info("preprocess_batch_start", chunk_count=len(raw_chunks))
+        tasks = [
+            self.extractor.extract(chunk.cleaned_text or chunk.raw_text)
+            for chunk in raw_chunks
+        ]
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for chunk, result in zip(raw_chunks, results):
+            if isinstance(result, Exception):
+                log.error(
+                    "preprocess_extract_exception", 
+                    chunk_id=str(chunk.id), 
+                    error=str(result)
+                )
+                chunk.status = RawMessageChunkStatus.ERROR
+                failed_count += 1
+                continue
+
+            extracted, raw_output = result
 
             if extracted is None:
                 log.warning(
@@ -68,8 +87,10 @@ class PreprocessingPipeline:
             chunk.status = RawMessageChunkStatus.PROCESSED
             embedding_text = to_embedding_text(extracted, chunk.cleaned_text or chunk.raw_text)
             session.add(ListingChunk(listing_id=listing.id, chunk_index=0, content=embedding_text))
+            
             extracted_count += 1
 
+        # Commit the entire batch of DB changes at once
         await session.commit()
         return extracted_count, failed_count
 

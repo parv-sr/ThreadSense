@@ -14,6 +14,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    BigInteger,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -55,7 +56,7 @@ class PropertyListing(Base):
         default=PropertyType.OTHER,
     )
     bhk: Mapped[float | None] = mapped_column(Float, nullable=True)
-    price: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    price: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     location: Mapped[str | None] = mapped_column(String(255), nullable=True)
     contact_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
     sender: Mapped[str | None] = mapped_column(String(255), nullable=True)
