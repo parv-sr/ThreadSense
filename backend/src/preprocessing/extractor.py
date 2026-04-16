@@ -21,6 +21,9 @@ MAX_CONCURRENT_PACKETS = max(3, int(os.getenv("MAX_CONCURRENT_PACKETS", "6")))
 
 
 class ExtractionPropertyType(StrEnum):
+    SALE = "SALE"
+    RENT = "RENT"
+    OTHER = "OTHER"
     RESIDENTIAL = "RESIDENTIAL"
     COMMERCIAL = "COMMERCIAL"
     PLOT = "PLOT"
