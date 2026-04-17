@@ -5,9 +5,7 @@ from collections.abc import Sequence
 from typing import Any
 
 import structlog
-import json
-from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
-from langgraph.errors import GraphRecursionError
+from langchain_core.messages import BaseMessage, HumanMessage
 
 from backend.src.rag.graph import ReActRAGGraph
 from backend.src.rag.retriever import HybridQdrantRetriever
@@ -38,31 +36,6 @@ class RAGAgent:
                 serialized.append({"type": type(message).__name__, "content": str(getattr(message, "content", ""))})
         return serialized
 
-    @staticmethod
-    def _extract_retrieved_records(messages: Sequence[BaseMessage]) -> list[dict[str, Any]]:
-        """Parse tool outputs and recover retrieval payloads for final rendering."""
-
-        records: list[dict[str, Any]] = []
-        for message in messages:
-            if not isinstance(message, ToolMessage):
-                continue
-
-            if message.name not in {"hybrid_retrieve", "filter_listings"}:
-                continue
-
-            parsed: Any
-            try:
-                parsed = json.loads(str(message.content))
-            except (TypeError, json.JSONDecodeError):
-                continue
-
-            if isinstance(parsed, list):
-                for item in parsed:
-                    if isinstance(item, dict):
-                        records.append(item)
-
-        return records
-
     async def invoke(self, message: str, thread_id: str | None = None) -> dict[str, object]:
         """Invoke the official ReAct agent with persistent thread memory and recursion limit."""
 
@@ -71,45 +44,22 @@ class RAGAgent:
         set_retriever_context(self.retriever)
 
         try:
-            response_payload: dict[str, object]
             logger.info(
                 "agent_messages_before_llm",
                 thread_id=resolved_thread_id,
                 messages=self._serialize_messages(initial_messages),
             )
             logger.info("rag_invoke_start", thread_id=resolved_thread_id)
-            try:
-                result: dict[str, Any] = await self.graph.ainvoke(
-                    {"messages": initial_messages},
-                    config={
-                        "configurable": {"thread_id": resolved_thread_id},
-                        "recursion_limit": 12,
-                    },
-                )
+            result: dict[str, Any] = await self.graph.ainvoke(
+                {"messages": initial_messages},
+                config={
+                    "configurable": {"thread_id": resolved_thread_id},
+                    "recursion_limit": 6,
+                },
+            )
 
-                final_messages: Sequence[BaseMessage] = list(result.get("messages", []))
-                retrieved_records: list[dict[str, Any]] = self._extract_retrieved_records(final_messages)
-                logger.info(
-                    "agent_retrieved_records_extracted",
-                    thread_id=resolved_thread_id,
-                    tool_message_count=len([m for m in final_messages if isinstance(m, ToolMessage)]),
-                    retrieved_record_count=len(retrieved_records),
-                )
-
-                if not retrieved_records:
-                    logger.warning("agent_retrieved_records_empty", thread_id=resolved_thread_id)
-
-                response_payload = await self.react_graph.build_final_response(
-                    messages=final_messages,
-                    retrieved_records=retrieved_records,
-                )
-            except GraphRecursionError as exc:
-                logger.warning(
-                    "agent_recursion_limit_reached",
-                    thread_id=resolved_thread_id,
-                    error=str(exc),
-                )
-                response_payload = await self.react_graph.build_final_response(messages=initial_messages, retrieved_records=[])
+            final_messages: Sequence[BaseMessage] = list(result.get("messages", []))
+            response_payload: dict[str, object] = await self.react_graph.build_final_response(final_messages)
         finally:
             clear_retriever_context()
 

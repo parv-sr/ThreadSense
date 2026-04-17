@@ -8,7 +8,8 @@ from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.prebuilt import create_react_agent
+#from langgraph.prebuilt import create_react_agent
+from langchain.agents import create_agent
 
 from backend.src.core.config import get_settings
 from backend.src.rag.prompts import FINAL_REASONING_PROMPT, REACT_PROMPT, SYSTEM_PROMPT
@@ -37,11 +38,11 @@ class ReActRAGGraph:
         self.reasoning_llm = self.llm.with_structured_output(ReasoningOutput)
 
         # Switched to official create_react_agent to fix tool_call_id matching bug.
-        self._agent = create_react_agent(
+        self._agent = create_agent(
             model=self.llm,
             tools=RAG_TOOLS,
             checkpointer=self.checkpointer,
-            state_modifier=f"{SYSTEM_PROMPT}\n\n{REACT_PROMPT}",
+            system_prompt=f"{SYSTEM_PROMPT}\n\n{REACT_PROMPT}",
         )
 
     def compile(self):
@@ -49,20 +50,30 @@ class ReActRAGGraph:
 
         return self._agent
 
-    @staticmethod
-    def _rows_from_retrieved_records(retrieved_records: Sequence[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str], list[dict[str, Any]]]:
-        """Normalize retrieved record payloads into table rows, sources, and evidence."""
+    async def build_final_response(
+        self,
+        messages: Sequence[BaseMessage],
+    ) -> dict[str, object]:
+        """Build UI response fields from retrieved docs + final assistant reasoning."""
+
+        docs: list[Document] = list(get_cached_docs())
+        if not docs:
+            empty_table: str = render_table_html([])
+            reasoning: str = (
+                "I could not find matching listings in the current dataset. "
+                "Try loosening budget, location, or BHK constraints and re-run the search."
+            )
+            return {
+                "table_html": empty_table,
+                "reasoning": reasoning,
+                "sources": [],
+            }
 
         rows: list[dict[str, Any]] = []
         sources: list[str] = []
-        evidence: list[dict[str, Any]] = []
-
-        for record in list(retrieved_records)[:20]:
-            metadata_value: Any = record.get("metadata", {})
-            metadata: dict[str, Any] = metadata_value if isinstance(metadata_value, dict) else {}
-
-            chunk_value: Any = record.get("chunk_id") or metadata.get("chunk_id") or metadata.get("id")
-            chunk_id: str | None = str(chunk_value) if chunk_value else None
+        for doc in docs[:20]:
+            metadata: dict[str, Any] = doc.metadata or {}
+            chunk_id: str | None = extract_chunk_id(doc)
             if chunk_id:
                 sources.append(chunk_id)
 
@@ -79,53 +90,6 @@ class ReActRAGGraph:
                 }
             )
 
-            evidence.append(
-                {
-                    "chunk_id": chunk_id,
-                    "metadata": metadata,
-                    "preview": str(record.get("preview", ""))[:500],
-                }
-            )
-
-        return rows, sources, evidence
-
-    async def build_final_response(
-        self,
-        messages: Sequence[BaseMessage],
-        retrieved_records: Sequence[dict[str, Any]] | None = None,
-    ) -> dict[str, object]:
-        """Build UI response fields from retrieved docs + final assistant reasoning."""
-
-        candidate_records: list[dict[str, Any]] = list(retrieved_records or [])
-        if not candidate_records:
-            docs: list[Document] = list(get_cached_docs())
-            candidate_records = [
-                {
-                    "chunk_id": extract_chunk_id(doc),
-                    "metadata": doc.metadata,
-                    "preview": doc.page_content[:500],
-                }
-                for doc in docs
-            ]
-
-        logger.info("build_final_response_records", candidate_records_count=len(candidate_records))
-        if not candidate_records:
-            empty_table: str = render_table_html([])
-            reasoning: str = (
-                "I could not find matching listings in the current dataset. "
-                "Try loosening budget, location, or BHK constraints and re-run the search."
-            )
-            return {
-                "table_html": empty_table,
-                "reasoning": reasoning,
-                "sources": [],
-            }
-
-        rows: list[dict[str, Any]]
-        sources: list[str]
-        evidence: list[dict[str, Any]]
-        rows, sources, evidence = self._rows_from_retrieved_records(candidate_records)
-
         table_html: str = render_table_html(rows)
         unique_sources: list[str] = sorted(set(sources))
 
@@ -134,6 +98,15 @@ class ReActRAGGraph:
             if isinstance(message, HumanMessage):
                 latest_user_query = str(message.content)
                 break
+
+        evidence: list[dict[str, Any]] = [
+            {
+                "chunk_id": extract_chunk_id(doc),
+                "metadata": doc.metadata,
+                "preview": doc.page_content[:500],
+            }
+            for doc in docs[:12]
+        ]
 
         final_agent_reasoning: str | None = None
         for message in reversed(list(messages)):
