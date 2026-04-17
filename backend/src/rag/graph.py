@@ -1,138 +1,68 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Sequence
 
 import structlog
 from langchain_core.documents import Document
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.graph import END, StateGraph
+from langgraph.prebuilt import create_react_agent
 
 from backend.src.core.config import get_settings
 from backend.src.rag.prompts import FINAL_REASONING_PROMPT, REACT_PROMPT, SYSTEM_PROMPT
-from backend.src.rag.state import AgentState
 from backend.src.rag.tools import RAG_TOOLS, get_cached_docs
 from backend.src.rag.utils import (
     ReasoningOutput,
     extract_chunk_id,
     extract_sources_from_reasoning,
-    last_five_conversation_messages,
     render_table_html,
 )
 
 logger = structlog.get_logger(__name__)
 settings = get_settings()
 
+
 class ReActRAGGraph:
-    """Custom async ReAct StateGraph with dynamic agent/tool loop."""
+    """ThreadSense graph wrapper built on LangGraph's official ReAct agent."""
 
     def __init__(self, model_name: str = "gpt-4o-mini") -> None:
-        self.checkpointer = MemorySaver()
-        self.llm = ChatOpenAI(
-            model=model_name, 
-            temperature=0.1,
+        self.checkpointer: MemorySaver = MemorySaver()
+        self.llm: ChatOpenAI = ChatOpenAI(
+            model=model_name,
+            temperature=0,
             api_key=settings.openai_api_key,
         )
-        self.tool_llm = self.llm.bind_tools(RAG_TOOLS)
         self.reasoning_llm = self.llm.with_structured_output(ReasoningOutput)
 
-    async def _agent_node(self, state: AgentState) -> AgentState:
-        """Reason about next action and optionally emit tool calls."""
+        # Switched to official create_react_agent to fix tool_call_id matching bug.
+        self._agent = create_react_agent(
+            model=self.llm,
+            tools=RAG_TOOLS,
+            checkpointer=self.checkpointer,
+            state_modifier=f"{SYSTEM_PROMPT}\n\n{REACT_PROMPT}",
+        )
 
-        message_history = list(state.get("messages", []))
-        convo_window = last_five_conversation_messages(message_history)
+    def compile(self):
+        """Return compiled LangGraph ReAct agent."""
 
-        prompt: list[BaseMessage] = [
-            SystemMessage(content=SYSTEM_PROMPT),
-            SystemMessage(content=REACT_PROMPT),
-            *convo_window,
-        ]
+        return self._agent
 
-        logger.info("react_agent_node", thread_id=state.get("thread_id"), message_count=len(convo_window))
-        ai_message = await self.tool_llm.ainvoke(prompt)
-        return {"messages": [ai_message]}
-
-    async def _tool_node(self, state: AgentState) -> AgentState:
-        """Execute tool calls emitted by the latest assistant message."""
-
-        messages = list(state.get("messages", []))
-        if not messages or not isinstance(messages[-1], AIMessage):
-            return {}
-
-        ai_message: AIMessage = messages[-1]
-        tool_messages: list[ToolMessage] = []
-
-        for tool_call in ai_message.tool_calls:
-            tool_name = tool_call["name"]
-            args = tool_call.get("args", {})
-            tool = next((t for t in RAG_TOOLS if t.name == tool_name), None)
-
-            if tool is None:
-                logger.warning("tool_not_found", tool=tool_name)
-                tool_messages.append(
-                    ToolMessage(content=f"Tool '{tool_name}' is unavailable.", tool_call_id=tool_call["id"], name=tool_name)
-                )
-                continue
-
-            logger.info("tool_call_start", thread_id=state.get("thread_id"), tool=tool_name, args=args)
-            result = await tool.ainvoke(args)
-            logger.info("tool_call_done", thread_id=state.get("thread_id"), tool=tool_name)
-
-            if isinstance(result, list) and result and isinstance(result[0], Document):
-                content = json.dumps(
-                    [
-                        {
-                            "chunk_id": extract_chunk_id(doc),
-                            "metadata": doc.metadata,
-                            "preview": doc.page_content[:240],
-                        }
-                        for doc in result[:20]
-                    ],
-                    default=str,
-                )
-            else:
-                content = json.dumps(result, default=str)
-
-            tool_messages.append(ToolMessage(content=content, tool_call_id=tool_call["id"], name=tool_name))
-
-        return {"messages": tool_messages, "retrieved_docs": get_cached_docs()}
-
-    def _route_after_agent(self, state: AgentState) -> str:
-        """Route agent output either to tool execution or finalization."""
-
-        messages = list(state.get("messages", []))
-        if not messages:
-            return "finalize"
-
-        last = messages[-1]
-        if isinstance(last, AIMessage) and last.tool_calls:
-            return "tools"
-        return "finalize"
-
-    async def _finalize_node(self, state: AgentState) -> AgentState:
-        """Build final table + reasoning with robust fallback behavior."""
-
-        docs = list(state.get("retrieved_docs", []))
-        if not docs:
-            empty_table = render_table_html([])
-            reasoning = (
-                "I could not find matching listings in the current dataset. "
-                "Try loosening budget, location, or BHK constraints and re-run the search."
-            )
-            return {
-                "table_html": empty_table,
-                "reasoning": reasoning,
-                "sources": [],
-                "messages": [AIMessage(content=reasoning)],
-            }
+    @staticmethod
+    def _rows_from_retrieved_records(retrieved_records: Sequence[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str], list[dict[str, Any]]]:
+        """Normalize retrieved record payloads into table rows, sources, and evidence."""
 
         rows: list[dict[str, Any]] = []
         sources: list[str] = []
-        for doc in docs[:20]:
-            metadata = doc.metadata or {}
-            chunk_id = extract_chunk_id(doc)
+        evidence: list[dict[str, Any]] = []
+
+        for record in list(retrieved_records)[:20]:
+            metadata_value: Any = record.get("metadata", {})
+            metadata: dict[str, Any] = metadata_value if isinstance(metadata_value, dict) else {}
+
+            chunk_value: Any = record.get("chunk_id") or metadata.get("chunk_id") or metadata.get("id")
+            chunk_id: str | None = str(chunk_value) if chunk_value else None
             if chunk_id:
                 sources.append(chunk_id)
 
@@ -149,48 +79,95 @@ class ReActRAGGraph:
                 }
             )
 
-        table_html = render_table_html(rows)
-        unique_sources = sorted(set(sources))
+            evidence.append(
+                {
+                    "chunk_id": chunk_id,
+                    "metadata": metadata,
+                    "preview": str(record.get("preview", ""))[:500],
+                }
+            )
 
-        latest_user_query = ""
-        for message in reversed(list(state.get("messages", []))):
+        return rows, sources, evidence
+
+    async def build_final_response(
+        self,
+        messages: Sequence[BaseMessage],
+        retrieved_records: Sequence[dict[str, Any]] | None = None,
+    ) -> dict[str, object]:
+        """Build UI response fields from retrieved docs + final assistant reasoning."""
+
+        candidate_records: list[dict[str, Any]] = list(retrieved_records or [])
+        if not candidate_records:
+            docs: list[Document] = list(get_cached_docs())
+            candidate_records = [
+                {
+                    "chunk_id": extract_chunk_id(doc),
+                    "metadata": doc.metadata,
+                    "preview": doc.page_content[:500],
+                }
+                for doc in docs
+            ]
+
+        logger.info("build_final_response_records", candidate_records_count=len(candidate_records))
+        if not candidate_records:
+            empty_table: str = render_table_html([])
+            reasoning: str = (
+                "I could not find matching listings in the current dataset. "
+                "Try loosening budget, location, or BHK constraints and re-run the search."
+            )
+            return {
+                "table_html": empty_table,
+                "reasoning": reasoning,
+                "sources": [],
+            }
+
+        rows: list[dict[str, Any]]
+        sources: list[str]
+        evidence: list[dict[str, Any]]
+        rows, sources, evidence = self._rows_from_retrieved_records(candidate_records)
+
+        table_html: str = render_table_html(rows)
+        unique_sources: list[str] = sorted(set(sources))
+
+        latest_user_query: str = ""
+        for message in reversed(list(messages)):
             if isinstance(message, HumanMessage):
                 latest_user_query = str(message.content)
                 break
 
-        evidence = [
-            {
-                "chunk_id": extract_chunk_id(doc),
-                "metadata": doc.metadata,
-                "preview": doc.page_content[:500],
-            }
-            for doc in docs[:12]
-        ]
+        final_agent_reasoning: str | None = None
+        for message in reversed(list(messages)):
+            if isinstance(message, AIMessage) and message.content:
+                final_agent_reasoning = str(message.content)
+                break
 
-        try:
-            reasoning_result = await self.reasoning_llm.ainvoke(
-                [
-                    SystemMessage(content=SYSTEM_PROMPT),
-                    SystemMessage(content=FINAL_REASONING_PROMPT),
-                    HumanMessage(
-                        content=(
-                            f"User query: {latest_user_query}\n"
-                            f"Source IDs: {unique_sources}\n"
-                            f"Evidence JSON: {json.dumps(evidence, default=str)}"
-                        )
-                    ),
-                ]
-            )
-            reasoning = reasoning_result.reasoning
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("final_reasoning_failed", error=str(exc))
-            citations = " ".join(f"[source:{source}]" for source in unique_sources[:6])
-            reasoning = (
-                "These listings were selected because they best match your requested constraints "
-                f"based on retrieved evidence. {citations}"
-            )
+        if final_agent_reasoning:
+            reasoning = final_agent_reasoning
+        else:
+            try:
+                reasoning_result = await self.reasoning_llm.ainvoke(
+                    [
+                        SystemMessage(content=SYSTEM_PROMPT),
+                        SystemMessage(content=FINAL_REASONING_PROMPT),
+                        HumanMessage(
+                            content=(
+                                f"User query: {latest_user_query}\n"
+                                f"Source IDs: {unique_sources}\n"
+                                f"Evidence JSON: {json.dumps(evidence, default=str)}"
+                            )
+                        ),
+                    ]
+                )
+                reasoning = reasoning_result.reasoning
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("final_reasoning_failed", error=str(exc))
+                citations: str = " ".join(f"[source:{source}]" for source in unique_sources[:6])
+                reasoning = (
+                    "These listings were selected because they best match your requested constraints "
+                    f"based on retrieved evidence. {citations}"
+                )
 
-        cited = extract_sources_from_reasoning(reasoning)
+        cited: list[str] = extract_sources_from_reasoning(reasoning)
         if unique_sources and not cited:
             reasoning = reasoning + "\n\n" + " ".join(f"[source:{source}]" for source in unique_sources[:6])
 
@@ -198,27 +175,4 @@ class ReActRAGGraph:
             "table_html": table_html,
             "reasoning": reasoning,
             "sources": unique_sources,
-            "messages": [AIMessage(content=reasoning)],
         }
-
-    def compile(self):
-        """Compile graph with conditional edges for true ReAct behavior."""
-
-        workflow = StateGraph(AgentState)
-        workflow.add_node("agent", self._agent_node)
-        workflow.add_node("tools", self._tool_node)
-        workflow.add_node("finalize", self._finalize_node)
-
-        workflow.set_entry_point("agent")
-        workflow.add_conditional_edges(
-            "agent",
-            self._route_after_agent,
-            {
-                "tools": "tools",
-                "finalize": "finalize",
-            },
-        )
-        workflow.add_edge("tools", "agent")
-        workflow.add_edge("finalize", END)
-
-        return workflow.compile(checkpointer=self.checkpointer)
