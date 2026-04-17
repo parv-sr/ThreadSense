@@ -54,7 +54,7 @@ class RAGAgent:
                 {"messages": initial_messages},
                 config={
                     "configurable": {"thread_id": resolved_thread_id},
-                    "recursion_limit": 10,
+                    "recursion_limit": 6,
                 },
             )
 

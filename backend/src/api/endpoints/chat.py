@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from functools import lru_cache
 from uuid import UUID, uuid4
 
@@ -21,6 +22,7 @@ from backend.src.rag.retriever import HybridQdrantRetriever
 logger = structlog.get_logger(__name__)
 settings = get_settings()
 router = APIRouter(prefix="/chat", tags=["chat"])
+CHAT_TIMEOUT_SECONDS: float = 55.0
 
 
 def build_rag_agent() -> RAGAgent:
@@ -63,6 +65,15 @@ async def chat(payload: ChatRequest, request: Request) -> ChatResponse:
     try:
         result: dict[str, object] = await agent.invoke(message=payload.message, thread_id=resolved_thread_id)
         return ChatResponse(**result)
+    except asyncio.TimeoutError:
+        duration_ms = int((perf_counter() - start_time) * 1000)
+        logger.error("agent_timeout", thread_id=resolved_thread_id, duration_ms=duration_ms)
+        return ChatResponse(
+            thread_id=resolved_thread_id,
+            table_html="",
+            reasoning="Sorry, the request took too long to process. Please try again.",
+            sources=[],
+        )
     except Exception as exc:  # noqa: BLE001
         logger.error("agent_failed", thread_id=resolved_thread_id, error=str(exc))
         return ChatResponse(
