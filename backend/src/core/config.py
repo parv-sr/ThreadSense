@@ -12,9 +12,9 @@ from dotenv import load_dotenv
 
 
 def _should_override_from_dotenv() -> bool:
-    app_env = os.getenv("APP_ENV", "dev").strip().lower()
-    is_local_env = app_env in {"dev", "local"}
-    is_container_runtime = Path("/.dockerenv").exists() or any(
+    app_env: str = os.getenv("APP_ENV", "dev").strip().lower()
+    is_local_env: bool = app_env in {"dev", "local"}
+    is_container_runtime: bool = Path("/.dockerenv").exists() or any(
         os.getenv(key) for key in ("KUBERNETES_SERVICE_HOST", "CONTAINERIZED", "DOCKER_CONTAINER")
     )
     return is_local_env and not is_container_runtime
@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     db_pool_timeout_seconds: int = Field(default=30, alias="DB_POOL_TIMEOUT_SECONDS")
     db_pool_recycle_seconds: int = Field(default=1800, alias="DB_POOL_RECYCLE_SECONDS")
 
+    llm_batch_size: int = Field(default=50, alias="LLM_BATCH_SIZE")
+
     openai_embedding_model: str = Field(default="text-embedding-3-small", alias="OPENAI_EMBEDDING_MODEL")
     qdrant_url: str | None = Field(default=None, alias="QDRANT_URL")
     qdrant_cluster_endpoint: str | None = Field(default=None, alias="QDRANT_CLUSTER_ENDPOINT")
@@ -65,9 +67,9 @@ class Settings(BaseSettings):
         if not self.redis_token or parsed.password:
             return self.redis_url
 
-        username = parsed.username or ""
-        auth = f":{self.redis_token}" if not username else f"{username}:{self.redis_token}"
-        netloc = f"{auth}@{parsed.hostname or ''}"
+        username: str = parsed.username or ""
+        auth: str = f":{self.redis_token}" if not username else f"{username}:{self.redis_token}"
+        netloc: str = f"{auth}@{parsed.hostname or ''}"
         if parsed.port:
             netloc += f":{parsed.port}"
         return urlunparse((parsed.scheme, netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))

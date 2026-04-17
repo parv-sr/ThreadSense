@@ -1,23 +1,37 @@
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Sequence
 from uuid import UUID
 
 import structlog
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.src.core.config import get_settings
+from backend.src.embeddings.service import EmbeddingService
 from backend.src.models.ingestion import RawMessageChunk, RawMessageChunkStatus
-from backend.src.models.preprocessing import ListingChunk, ListingStatus, PropertyListing
-from backend.src.preprocessing.extractor import ListingExtractor, to_embedding_text
+from backend.src.models.preprocessing import (
+    FurnishedType,
+    ListingChunk,
+    ListingStatus,
+    PropertyListing,
+    PropertyType,
+)
+from backend.src.preprocessing.extractor import ListingExtractor, ListingExtractionResult, to_embedding_text
 
-log = structlog.get_logger(__name__)
+logger = structlog.get_logger(__name__)
+settings = get_settings()
 
 
 class PreprocessingPipeline:
-    def __init__(self, extractor: ListingExtractor | None = None) -> None:
-        self.extractor = extractor or ListingExtractor()
+    def __init__(
+        self,
+        extractor: ListingExtractor | None = None,
+        embedding_service: EmbeddingService | None = None,
+    ) -> None:
+        self.extractor: ListingExtractor = extractor or ListingExtractor()
+        self.embedding_service: EmbeddingService = embedding_service or EmbeddingService()
 
     async def process_raw_chunks(
         self,
@@ -25,72 +39,95 @@ class PreprocessingPipeline:
         session: AsyncSession,
         raw_chunks: Sequence[RawMessageChunk],
     ) -> tuple[int, int]:
-        extracted_count = 0
-        failed_count = 0
+        extracted_count: int = 0
+        failed_count: int = 0
 
-        log.info("preprocess_batch_start", chunk_count=len(raw_chunks))
-        tasks = [
-            self.extractor.extract(chunk.cleaned_text or chunk.raw_text)
-            for chunk in raw_chunks
-        ]
+        logger.info("preprocess_batch_start", chunk_count=len(raw_chunks), llm_batch_size=settings.llm_batch_size)
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        # v1 -> v2 improvement: chunk-level async extraction in batches via abatch,
+        # so we avoid the previous one-LLM-call-per-await bottleneck.
+        batch_size: int = max(1, settings.llm_batch_size)
+        for start_index in range(0, len(raw_chunks), batch_size):
+            batch_chunks: Sequence[RawMessageChunk] = raw_chunks[start_index : start_index + batch_size]
+            extractor_inputs: list[tuple[UUID, str]] = [
+                (chunk.id, chunk.cleaned_text or chunk.raw_text)
+                for chunk in batch_chunks
+            ]
 
-        for chunk, result in zip(raw_chunks, results):
-            if isinstance(result, Exception):
-                log.error(
-                    "preprocess_extract_exception", 
-                    chunk_id=str(chunk.id), 
-                    error=str(result)
-                )
-                chunk.status = RawMessageChunkStatus.ERROR
-                failed_count += 1
-                continue
+            extracted_rows, raw_outputs = await self.extractor.aextract_batch(extractor_inputs)
+            result_by_id: dict[UUID, ListingExtractionResult | None] = {
+                chunk_id: result for chunk_id, result in extracted_rows
+            }
 
-            extracted, raw_output = result
+            for chunk in batch_chunks:
+                result: ListingExtractionResult | None = result_by_id.get(chunk.id)
+                raw_output: str | None = raw_outputs.get(str(chunk.id))
 
-            if extracted is None:
-                log.warning(
-                    "preprocess_extract_failed",
-                    chunk_id=str(chunk.id),
-                    rawfile_id=str(chunk.rawfile_id),
-                    llm_output_preview=(raw_output or "")[:500],
-                )
-                chunk.status = RawMessageChunkStatus.ERROR
-                failed_count += 1
-                continue
+                if result is None:
+                    logger.warning(
+                        "preprocess_extract_failed",
+                        chunk_id=str(chunk.id),
+                        rawfile_id=str(chunk.rawfile_id),
+                        llm_output_preview=(raw_output or "")[:500],
+                    )
+                    chunk.status = RawMessageChunkStatus.ERROR
+                    failed_count += 1
+                    continue
 
-            listing = PropertyListing(
-                raw_chunk_id=chunk.id,
-                sender=chunk.sender,
-                timestamp=chunk.message_start,
-                status=ListingStatus.PENDING,
-                raw_llm_output=raw_output,
-            )
-            session.add(listing)
-            await session.flush()
+                try:
+                    # Savepoint logic: one failing listing never rolls back the full batch.
+                    async with session.begin_nested():
+                        listing: PropertyListing = PropertyListing(
+                            raw_chunk_id=chunk.id,
+                            sender=chunk.sender,
+                            timestamp=chunk.message_start,
+                            status=ListingStatus.EXTRACTED,
+                            raw_llm_output=raw_output,
+                            property_type=PropertyType(result.property_type.value),
+                            bhk=result.bhk,
+                            price=result.price,
+                            location=result.location,
+                            contact_number=result.contact_number,
+                            furnished=FurnishedType(result.furnished.value)
+                            if result.furnished is not None
+                            else None,
+                            floor_number=result.floor_number,
+                            total_floors=result.total_floors,
+                            area_sqft=result.area_sqft,
+                            landmark=result.landmark,
+                            is_verified=result.is_verified,
+                            confidence_score=result.confidence_score,
+                        )
+                        session.add(listing)
+                        await session.flush()
 
-            listing.property_type = extracted.property_type
-            listing.bhk = extracted.bhk
-            listing.price = extracted.price
-            listing.location = extracted.location
-            listing.contact_number = extracted.contact_number
-            listing.furnished = extracted.furnished
-            listing.floor_number = extracted.floor_number
-            listing.total_floors = extracted.total_floors
-            listing.area_sqft = extracted.area_sqft
-            listing.landmark = extracted.landmark
-            listing.is_verified = extracted.is_verified
-            listing.confidence_score = extracted.confidence_score
-            listing.status = ListingStatus.EXTRACTED
+                        chunk.status = RawMessageChunkStatus.PROCESSED
+                        embedding_text: str = to_embedding_text(result, chunk.cleaned_text or chunk.raw_text)
+                        listing_chunk: ListingChunk = ListingChunk(
+                            listing_id=listing.id,
+                            chunk_index=0,
+                            content=embedding_text,
+                        )
+                        session.add(listing_chunk)
+                        await session.flush()
 
-            chunk.status = RawMessageChunkStatus.PROCESSED
-            embedding_text = to_embedding_text(extracted, chunk.cleaned_text or chunk.raw_text)
-            session.add(ListingChunk(listing_id=listing.id, chunk_index=0, content=embedding_text))
-            
-            extracted_count += 1
+                        # Atomic embedding+upsert in the same task/session for this listing.
+                        await self.embedding_service.embed_and_upsert_listing(listing=listing, session=session)
 
-        # Commit the entire batch of DB changes at once
+                        extracted_count += 1
+
+                except SQLAlchemyError as db_err:
+                    logger.error("database_insert_failed", chunk_id=str(chunk.id), error=str(db_err))
+                    chunk.status = RawMessageChunkStatus.ERROR
+                    failed_count += 1
+                    continue
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("chunk_processing_failed", chunk_id=str(chunk.id), error=str(exc))
+                    chunk.status = RawMessageChunkStatus.ERROR
+                    failed_count += 1
+                    continue
+
+        # Final commit only includes successful savepoints.
         await session.commit()
         return extracted_count, failed_count
 

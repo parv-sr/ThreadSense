@@ -5,6 +5,7 @@ import os
 import re
 from enum import StrEnum
 from typing import Any, Sequence
+from uuid import UUID
 
 import structlog
 from langchain_openai import ChatOpenAI
@@ -455,6 +456,7 @@ class ListingExtractor:
             api_key=settings.openai_api_key,
         )
         self._structured_model = self._model.with_structured_output(BatchEnvelope, method="json_mode")
+        self._single_structured_model = self._model.with_structured_output(PropertyListing, method="function_calling")
 
     @retry(
         stop=stop_after_attempt(3),
@@ -538,6 +540,63 @@ class ListingExtractor:
     async def extract(self, message_text: str) -> tuple[ListingExtractionResult | None, str | None]:
         many = await self.extract_many([message_text])
         return many[0] if many else (None, None)
+
+    async def aextract_batch(
+        self,
+        chunks: Sequence[tuple[UUID, str]],
+    ) -> tuple[list[tuple[UUID, ListingExtractionResult | None]], dict[str, str]]:
+        """
+        v2 production batching path:
+        - One structured-output call per message, but dispatched concurrently via `abatch`.
+        - Keeps Pydantic validators as a post-processing safety net after model parsing.
+        """
+        if not chunks:
+            return [], {}
+
+        prompts: list[str] = []
+        chunk_ids: list[UUID] = []
+        for chunk_id, cleaned_text in chunks:
+            chunk_ids.append(chunk_id)
+            prompt: str = (
+                "Extract one real-estate listing from this WhatsApp message. "
+                "If irrelevant, set is_irrelevant=true.\n\n"
+                f"Message:\n{(cleaned_text or '')[:6000]}"
+            )
+            prompts.append(prompt)
+
+        raw_outputs: dict[str, str] = {}
+        try:
+            structured_results: list[PropertyListing] = await self._single_structured_model.abatch(prompts)
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "batch_structured_extract_failed",
+                batch_size=len(chunks),
+                error=str(exc),
+            )
+            failed_results: list[tuple[UUID, ListingExtractionResult | None]] = [
+                (chunk_id, None) for chunk_id in chunk_ids
+            ]
+            for chunk_id in chunk_ids:
+                raw_outputs[str(chunk_id)] = f"abatch_error:{exc}"
+            return failed_results, raw_outputs
+
+        extracted_rows: list[tuple[UUID, ListingExtractionResult | None]] = []
+        for chunk_id, structured in zip(chunk_ids, structured_results):
+            try:
+                # Re-validate through canonical extraction model to preserve all validators.
+                canonical: ListingExtractionResult = ListingExtractionResult.model_validate(structured.model_dump())
+                extracted_rows.append((chunk_id, canonical))
+                raw_outputs[str(chunk_id)] = structured.model_dump_json()
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "batch_structured_extract_validation_failed",
+                    chunk_id=str(chunk_id),
+                    error=str(exc),
+                )
+                extracted_rows.append((chunk_id, None))
+                raw_outputs[str(chunk_id)] = f"validation_error:{exc}"
+
+        return extracted_rows, raw_outputs
 
 
 def to_embedding_text(extraction: ListingExtractionResult, original_text: str) -> str:
