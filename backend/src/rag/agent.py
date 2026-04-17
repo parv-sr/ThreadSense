@@ -5,11 +5,13 @@ from collections.abc import Sequence
 from typing import Any
 
 import structlog
+from langchain_core.documents import Document
 from langchain_core.messages import BaseMessage, HumanMessage
+from langgraph.errors import GraphRecursionError
 
 from backend.src.rag.graph import ReActRAGGraph
 from backend.src.rag.retriever import HybridQdrantRetriever
-from backend.src.rag.tools import clear_retriever_context, set_retriever_context
+from backend.src.rag.tools import clear_retriever_context, set_cached_docs, set_retriever_context
 
 logger = structlog.get_logger(__name__)
 
@@ -50,16 +52,26 @@ class RAGAgent:
                 messages=self._serialize_messages(initial_messages),
             )
             logger.info("rag_invoke_start", thread_id=resolved_thread_id)
-            result: dict[str, Any] = await self.graph.ainvoke(
-                {"messages": initial_messages},
-                config={
-                    "configurable": {"thread_id": resolved_thread_id},
-                    "recursion_limit": 6,
-                },
-            )
+            try:
+                result: dict[str, Any] = await self.graph.ainvoke(
+                    {"messages": initial_messages},
+                    config={
+                        "configurable": {"thread_id": resolved_thread_id},
+                        "recursion_limit": 12,
+                    },
+                )
 
-            final_messages: Sequence[BaseMessage] = list(result.get("messages", []))
-            response_payload: dict[str, object] = await self.react_graph.build_final_response(final_messages)
+                final_messages: Sequence[BaseMessage] = list(result.get("messages", []))
+                response_payload: dict[str, object] = await self.react_graph.build_final_response(final_messages)
+            except GraphRecursionError as exc:
+                logger.warning(
+                    "rag_react_recursion_fallback",
+                    thread_id=resolved_thread_id,
+                    error=str(exc),
+                )
+                fallback_docs: list[Document] = await self.retriever.retrieve(query=message, filters=None, limit=20)
+                set_cached_docs(fallback_docs)
+                response_payload = await self.react_graph.build_final_response(initial_messages)
         finally:
             clear_retriever_context()
 
