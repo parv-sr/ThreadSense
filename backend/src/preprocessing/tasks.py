@@ -1,57 +1,90 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from uuid import UUID
 
 import structlog
 
 from backend.src.db.session import AsyncSessionLocal
-from backend.src.embeddings.tasks import embed_property_listing_task
+from backend.src.models.ingestion import RawFile, RawFileStatus
 from backend.src.preprocessing.pipeline import PreprocessingPipeline, load_new_chunks_for_rawfile
 from backend.src.tasks import broker
 
 log = structlog.get_logger(__name__)
 
 
-@broker.task
+@broker.task(
+    retry_on_error=True,
+    max_retries=3,
+    delay=10,
+    use_delay_exponent=True,
+    max_delay_exponent=120,
+)
 async def preprocess_rawfile_task(rawfile_id: str) -> dict[str, int | str]:
     try:
-        parsed_id = UUID(rawfile_id)
+        parsed_id: UUID = UUID(rawfile_id)
     except ValueError as exc:
         return {"status": "FAILED", "error": f"Invalid rawfile_id: {exc}"}
 
-    pipeline = PreprocessingPipeline()
+    extracted_count: int = 0
+    failed_count: int = 0
+    outcome_status: RawFileStatus = RawFileStatus.FAILED
+    task_error: Exception | None = None
 
     async with AsyncSessionLocal() as session:
-        chunks = await load_new_chunks_for_rawfile(session, parsed_id)
-        if not chunks:
-            return {"status": "COMPLETED", "rawfile_id": rawfile_id, "extracted": 0, "failed": 0}
+        rawfile: RawFile | None = await session.get(RawFile, parsed_id)
+        if rawfile is None:
+            return {"status": "FAILED", "error": "RawFile not found"}
 
-        extracted_count, failed_count = await pipeline.process_raw_chunks(session=session, raw_chunks=chunks)
+        rawfile.status = RawFileStatus.PROCESSING
+        rawfile.process_started_at = rawfile.process_started_at or datetime.now(timezone.utc)
+        await session.commit()
 
-    # Trigger per-listing embedding after preprocessing success.
-    if extracted_count > 0:
+    pipeline: PreprocessingPipeline = PreprocessingPipeline()
+
+    try:
         async with AsyncSessionLocal() as session:
-            from sqlalchemy import select
-            from backend.src.models.preprocessing import ListingStatus, PropertyListing
+            chunks = await load_new_chunks_for_rawfile(session, parsed_id)
+            if not chunks:
+                outcome_status = RawFileStatus.COMPLETED
+                return {
+                    "status": "COMPLETED",
+                    "rawfile_id": rawfile_id,
+                    "extracted": 0,
+                    "failed": 0,
+                }
 
-            stmt = select(PropertyListing.id).where(
-                PropertyListing.status == ListingStatus.EXTRACTED,
-                PropertyListing.raw_chunk_id.in_([chunk.id for chunk in chunks]),
-            )
-            listing_ids = [row[0] for row in (await session.execute(stmt)).all()]
+            extracted_count, failed_count = await pipeline.process_raw_chunks(session=session, raw_chunks=chunks)
+            outcome_status = RawFileStatus.COMPLETED
 
-        for listing_id in listing_ids:
-            await embed_property_listing_task.kiq(str(listing_id))
+        log.info(
+            "preprocess_rawfile_done",
+            rawfile_id=rawfile_id,
+            extracted=extracted_count,
+            failed=failed_count,
+        )
+        return {
+            "status": "COMPLETED",
+            "rawfile_id": rawfile_id,
+            "extracted": extracted_count,
+            "failed": failed_count,
+        }
 
-    log.info(
-        "preprocess_rawfile_done",
-        rawfile_id=rawfile_id,
-        extracted=extracted_count,
-        failed=failed_count,
-    )
-    return {
-        "status": "COMPLETED",
-        "rawfile_id": rawfile_id,
-        "extracted": extracted_count,
-        "failed": failed_count,
-    }
+    except Exception as exc:  # noqa: BLE001
+        task_error = exc
+        # Keep retriable failures visible to workers and never leave PROCESSING behind.
+        outcome_status = RawFileStatus.PENDING
+        raise
+
+    finally:
+        await pipeline.embedding_service.close()
+        # Safety net for worker interruptions/retries: reset lingering PROCESSING rows.
+        async with AsyncSessionLocal() as cleanup_session:
+            cleanup_rawfile: RawFile | None = await cleanup_session.get(RawFile, parsed_id)
+            if cleanup_rawfile is not None and cleanup_rawfile.status == RawFileStatus.PROCESSING:
+                cleanup_rawfile.status = outcome_status
+                cleanup_rawfile.process_finished_at = datetime.now(timezone.utc)
+                cleanup_rawfile.processed = outcome_status == RawFileStatus.COMPLETED
+                if task_error is not None and outcome_status != RawFileStatus.COMPLETED:
+                    cleanup_rawfile.notes = f"Preprocessing retry scheduled: {task_error}"
+                await cleanup_session.commit()
