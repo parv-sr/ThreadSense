@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from functools import lru_cache
-from uuid import UUID
+from time import perf_counter
+from uuid import UUID, uuid4
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -21,23 +23,24 @@ from backend.src.rag.retriever import HybridQdrantRetriever
 logger = structlog.get_logger(__name__)
 settings = get_settings()
 router = APIRouter(prefix="/chat", tags=["chat"])
+CHAT_TIMEOUT_SECONDS: float = 55.0
 
 
 def build_rag_agent() -> RAGAgent:
     """Build a production RAG agent using pure dense vectors."""
     logger.info("rag_agent_build_start", qdrant_url=settings.qdrant_endpoint, collection=QDRANT_COLLECTION)
 
-    client = QdrantClient(url=settings.qdrant_endpoint, api_key=settings.qdrant_api_key)
+    client: QdrantClient = QdrantClient(url=settings.qdrant_endpoint, api_key=settings.qdrant_api_key)
 
-    vector_store = QdrantVectorStore(
+    vector_store: QdrantVectorStore = QdrantVectorStore(
         client=client,
         collection_name=QDRANT_COLLECTION,
         embedding=OpenAIEmbeddings(model=settings.openai_embedding_model),
-        retrieval_mode=RetrievalMode.DENSE,           # ← Pure dense (simple & stable)
+        retrieval_mode=RetrievalMode.DENSE,
         vector_name=QDRANT_VECTOR_NAME,
     )
 
-    retriever = HybridQdrantRetriever(vector_store)
+    retriever: HybridQdrantRetriever = HybridQdrantRetriever(vector_store)
     return RAGAgent(retriever)
 
 
@@ -56,13 +59,37 @@ def get_agent(request: Request) -> RAGAgent:
 async def chat(payload: ChatRequest, request: Request) -> ChatResponse:
     """Chat with the fully agentic ReAct RAG workflow."""
 
-    agent = get_agent(request)
+    agent: RAGAgent = get_agent(request)
+    resolved_thread_id: str = payload.thread_id or str(uuid4())
+    start_time: float = perf_counter()
+
+    logger.info("chat_request_received", thread_id=resolved_thread_id)
     try:
-        result = await agent.invoke(message=payload.message, thread_id=payload.thread_id)
+        result: dict[str, object] = await asyncio.wait_for(
+            agent.invoke(message=payload.message, thread_id=resolved_thread_id),
+            timeout=CHAT_TIMEOUT_SECONDS,
+        )
+        duration_ms: int = int((perf_counter() - start_time) * 1000)
+        logger.info("chat_request_succeeded", thread_id=resolved_thread_id, duration_ms=duration_ms)
         return ChatResponse(**result)
+    except asyncio.TimeoutError:
+        duration_ms = int((perf_counter() - start_time) * 1000)
+        logger.error("agent_timeout", thread_id=resolved_thread_id, duration_ms=duration_ms)
+        return ChatResponse(
+            thread_id=resolved_thread_id,
+            table_html="",
+            reasoning="Sorry, the request took too long to process. Please try again.",
+            sources=[],
+        )
     except Exception as exc:  # noqa: BLE001
-        logger.exception("chat_request_failed", error=str(exc))
-        raise HTTPException(status_code=500, detail="RAG agent failed to generate a response") from exc
+        duration_ms = int((perf_counter() - start_time) * 1000)
+        logger.error("agent_failed", thread_id=resolved_thread_id, duration_ms=duration_ms, error=str(exc))
+        return ChatResponse(
+            thread_id=resolved_thread_id,
+            table_html="",
+            reasoning="Sorry, I encountered an issue processing your request. Please try again.",
+            sources=[],
+        )
 
 
 @router.get("/source/{chunk_id}", response_model=SourceResponse)
@@ -70,11 +97,11 @@ async def view_source(chunk_id: str, session: AsyncSession = Depends(get_db_sess
     """Return full RawMessageChunk payload for a listing source button click."""
 
     try:
-        parsed_id = UUID(chunk_id)
+        parsed_id: UUID = UUID(chunk_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="chunk_id must be a valid UUID") from exc
 
-    chunk = await session.get(RawMessageChunk, parsed_id)
+    chunk: RawMessageChunk | None = await session.get(RawMessageChunk, parsed_id)
     if chunk is None:
         raise HTTPException(status_code=404, detail="Source chunk not found")
 

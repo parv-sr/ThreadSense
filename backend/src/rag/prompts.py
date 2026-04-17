@@ -17,6 +17,9 @@ Action -> call tool
 Observation -> inspect tool output
 Repeat until enough evidence exists.
 If you already have enough evidence, stop calling tools and respond naturally.
+For listing search requests, call hybrid_retrieve once first, then answer from evidence.
+Only run additional retrieval if first retrieval returns no useful candidates or the user asks to refine.
+Do not repeatedly paraphrase and re-run near-identical retrieval queries.
 """.strip()
 
 FINAL_REASONING_PROMPT = """
