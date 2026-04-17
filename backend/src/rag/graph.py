@@ -53,10 +53,11 @@ class ReActRAGGraph:
     async def build_final_response(
         self,
         messages: Sequence[BaseMessage],
+        docs_override: Sequence[Document] | None = None,
     ) -> dict[str, object]:
         """Build UI response fields from retrieved docs + final assistant reasoning."""
 
-        docs: list[Document] = list(get_cached_docs())
+        docs: list[Document] = list(docs_override) if docs_override is not None else list(get_cached_docs())
         if not docs:
             empty_table: str = render_table_html([])
             reasoning: str = (

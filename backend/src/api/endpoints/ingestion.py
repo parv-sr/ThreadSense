@@ -73,7 +73,41 @@ async def ingest_file(
     await session.refresh(rawfile)
 
     task = await ingest_raw_file_task.kiq(str(rawfile.id))
+    rawfile.notes = f"{rawfile.notes or ''}; task_id={task.task_id}".strip("; ")
+    session.add(rawfile)
+    await session.commit()
     log.info("ingest_queued", rawfile_id=str(rawfile.id), task_id=task.task_id)
     return {"task_id": task.task_id, "rawfile_id": str(rawfile.id), "status": "QUEUED"}
 
 
+@router.get("/status/{task_id}")
+async def ingest_status(task_id: str, session: AsyncSession = Depends(get_db_session)) -> dict[str, object]:
+    row = await session.execute(
+        select(RawFile).where(RawFile.notes.like(f"%task_id={task_id}%")).order_by(RawFile.uploaded_at.desc())
+    )
+    rawfile: RawFile | None = row.scalars().first()
+    if rawfile is None:
+        return {"task_id": task_id, "status": "PENDING", "result": None}
+
+    status_map: dict[str, str] = {
+        str(RawFileStatus.PENDING): "PENDING",
+        str(RawFileStatus.PROCESSING): "PROCESSING",
+        str(RawFileStatus.COMPLETED): "COMPLETED",
+        str(RawFileStatus.FAILED): "FAILED",
+        str(RawFileStatus.CANCELLED): "FAILED",
+    }
+    normalized_status: str = status_map.get(str(rawfile.status), str(rawfile.status))
+
+    payload: dict[str, object] = {
+        "task_id": task_id,
+        "status": normalized_status,
+        "result": {
+            "rawfile_id": str(rawfile.id),
+            "processed": bool(rawfile.processed),
+            "dedupe_stats": rawfile.dedupe_stats or {},
+            "notes": rawfile.notes,
+        },
+    }
+    if normalized_status == "FAILED":
+        payload["error"] = rawfile.notes or "Ingestion failed."
+    return payload

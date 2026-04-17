@@ -10,8 +10,9 @@ from langchain_core.messages import BaseMessage, HumanMessage
 from langgraph.errors import GraphRecursionError
 
 from backend.src.rag.graph import ReActRAGGraph
+from backend.src.rag.query_parser import parse_query_constraints
 from backend.src.rag.retriever import HybridQdrantRetriever
-from backend.src.rag.tools import clear_retriever_context, set_cached_docs, set_retriever_context
+from backend.src.rag.tools import clear_retriever_context, get_cached_docs, set_cached_docs, set_retriever_context
 
 logger = structlog.get_logger(__name__)
 
@@ -62,7 +63,26 @@ class RAGAgent:
                 )
 
                 final_messages: Sequence[BaseMessage] = list(result.get("messages", []))
-                response_payload: dict[str, object] = await self.react_graph.build_final_response(final_messages)
+                cached_docs: list[Document] = list(get_cached_docs())
+                if not cached_docs:
+                    constraints = parse_query_constraints(message)
+                    fallback_docs: list[Document] = await self.retriever.retrieve(
+                        query=constraints.normalized_query or message,
+                        filters=constraints.filters or None,
+                        limit=20,
+                    )
+                    set_cached_docs(fallback_docs)
+                    cached_docs = fallback_docs
+                    logger.warning(
+                        "rag_docs_cache_miss_recovered",
+                        thread_id=resolved_thread_id,
+                        recovered_count=len(cached_docs),
+                    )
+
+                response_payload = await self.react_graph.build_final_response(
+                    final_messages,
+                    docs_override=cached_docs,
+                )
             except GraphRecursionError as exc:
                 logger.warning(
                     "rag_react_recursion_fallback",
