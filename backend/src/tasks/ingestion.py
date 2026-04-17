@@ -20,7 +20,7 @@ from backend.src.tasks import broker
 log = structlog.get_logger(__name__)
 
 KEYWORDS_RE = re.compile(
-    r"(bhk|rent|sale|lease|price|cr\b|lacs?|sqft|carpet|furnished|office|shop|flat|buy|sell|want)",
+    r"(bhk|rent|sale|lease|price|cr\b|lacs?|sqft|carpet|furnished|office|shop|flat|buy|sell|want|studio|rk|apt|apartment|tower|deposit|budget)",
     re.IGNORECASE,
 )
 JUNK_RE = re.compile(
@@ -54,6 +54,25 @@ class DedupeStats:
 
 class IngestionError(Exception):
     pass
+
+
+def _looks_like_listing_candidate(cleaned_text: str) -> bool:
+    lowered_text: str = cleaned_text.lower()
+    if KEYWORDS_RE.search(lowered_text):
+        return True
+
+    numeric_hint: bool = bool(re.search(r"\b\d+(?:\.\d+)?\s*(bhk|rk|cr|l|lac|lakh|k|sqft|ft)\b", lowered_text))
+    currency_hint: bool = "₹" in cleaned_text or "rs" in lowered_text or "inr" in lowered_text
+    contact_hint: bool = bool(re.search(r"(?:\+?\d[\d\s-]{8,}\d)", cleaned_text))
+    location_hint: bool = bool(
+        re.search(
+            r"\b(bandra|khar|andheri|juhu|santacruz|worli|powai|chembur|goregaon|malad|borivali|bkc)\b",
+            lowered_text,
+        )
+    )
+    compact_length_hint: bool = len(cleaned_text.split()) >= 3
+
+    return compact_length_hint and (numeric_hint or currency_hint or contact_hint or location_hint)
 
 
 def _normalize_for_hash(text: str | None, sender: str | None) -> str:
@@ -174,7 +193,7 @@ async def ingest_raw_file_task(rawfile_id: str) -> dict[str, Any]:
                     stats.ignored_chunks += 1
                     continue
 
-                if not KEYWORDS_RE.search(cleaned_text):
+                if not _looks_like_listing_candidate(cleaned_text):
                     stats.keyword_filtered += 1
                     stats.ignored_chunks += 1
                     continue
