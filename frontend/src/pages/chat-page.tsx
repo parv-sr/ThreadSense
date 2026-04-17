@@ -96,7 +96,8 @@ export const ChatPage = () => {
 
           {chatMutation.isError ? (
             <div className='mr-auto flex max-w-md items-center gap-2 rounded-xl border border-red-400/20 bg-red-500/10 px-3 py-2 text-sm text-red-200'>
-              <AlertTriangle className='h-4 w-4' /> Failed to reach /chat/. Please retry.
+              <AlertTriangle className='h-4 w-4' /> Cannot connect to backend. Is the backend server running on port
+              8000?
             </div>
           ) : null}
         </div>

@@ -1,6 +1,8 @@
 // frontend/src/api.ts
 // Typed API client for all ThreadSense backend calls.
 
+// Using Vite proxy so we don't need CORS in development.
+// In local dev, keep this empty and call relative paths like /chat/.
 const BASE_URL = import.meta.env.VITE_API_URL ?? ""
 
 // ─── Types ────────────────────────────────────────────────────────────────────

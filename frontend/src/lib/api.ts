@@ -2,7 +2,9 @@ import axios from 'axios'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { z } from 'zod'
 
-const API_BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
+// Using Vite proxy so we don't need CORS in development.
+// Keep requests relative (e.g. /chat/) and let Vite forward to :8000.
+const API_BASE_URL = import.meta.env.VITE_API_URL ?? ''
 
 export const api = axios.create({
   baseURL: API_BASE_URL,
