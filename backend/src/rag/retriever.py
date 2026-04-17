@@ -28,16 +28,7 @@ class HybridQdrantRetriever:
         must: list[qmodels.Condition] = []
 
         if bhk := filters.get("bhk"):
-            try:
-                bhk_value: float = float(bhk)
-                must.append(
-                    qmodels.FieldCondition(
-                        key="bhk",
-                        range=qmodels.Range(gte=bhk_value - 0.01, lte=bhk_value + 0.01),
-                    )
-                )
-            except (TypeError, ValueError):
-                must.append(qmodels.FieldCondition(key="bhk", match=qmodels.MatchValue(value=bhk)))
+            must.append(qmodels.FieldCondition(key="bhk", match=qmodels.MatchValue(value=float(bhk))))
         if location := filters.get("location"):
             must.append(qmodels.FieldCondition(key="location", match=qmodels.MatchText(text=str(location))))
         if sender := filters.get("sender"):
@@ -50,7 +41,7 @@ class HybridQdrantRetriever:
         if min_price is not None or max_price is not None:
             must.append(
                 qmodels.FieldCondition(
-                    key="price_numeric",
+                    key="price", # Was previously "price_numeric"
                     range=qmodels.Range(
                         gte=float(min_price) if min_price is not None else None,
                         lte=float(max_price) if max_price is not None else None,

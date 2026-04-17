@@ -85,6 +85,10 @@ class EmbeddingService:
                 )
             },
         )
+        await self.qdrant.create_payload_index(QDRANT_COLLECTION, "bhk", field_schema=qmodels.PayloadSchemaType.FLOAT)
+        await self.qdrant.create_payload_index(QDRANT_COLLECTION, "location", field_schema=qmodels.PayloadSchemaType.TEXT)
+        await self.qdrant.create_payload_index(QDRANT_COLLECTION, "sender", field_schema=qmodels.PayloadSchemaType.KEYWORD)
+        await self.qdrant.create_payload_index(QDRANT_COLLECTION, "price", field_schema=qmodels.PayloadSchemaType.INTEGER)
         self._collection_ready = True
         log.info("qdrant_collection_created", collection=QDRANT_COLLECTION)
 
