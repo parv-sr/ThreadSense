@@ -25,7 +25,16 @@ class HybridQdrantRetriever:
         must: list[qmodels.Condition] = []
 
         if bhk := filters.get("bhk"):
-            must.append(qmodels.FieldCondition(key="bhk", match=qmodels.MatchValue(value=str(bhk))))
+            try:
+                bhk_value: float = float(bhk)
+                must.append(
+                    qmodels.FieldCondition(
+                        key="bhk",
+                        range=qmodels.Range(gte=bhk_value - 0.01, lte=bhk_value + 0.01),
+                    )
+                )
+            except (TypeError, ValueError):
+                must.append(qmodels.FieldCondition(key="bhk", match=qmodels.MatchValue(value=bhk)))
         if location := filters.get("location"):
             must.append(qmodels.FieldCondition(key="location", match=qmodels.MatchText(text=str(location))))
         if sender := filters.get("sender"):

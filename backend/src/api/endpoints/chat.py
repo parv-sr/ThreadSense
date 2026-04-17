@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from functools import lru_cache
+from time import perf_counter
 from uuid import UUID, uuid4
 
 import structlog
@@ -60,6 +61,7 @@ async def chat(payload: ChatRequest, request: Request) -> ChatResponse:
 
     agent: RAGAgent = get_agent(request)
     resolved_thread_id: str = payload.thread_id or str(uuid4())
+    start_time: float = perf_counter()
 
     logger.info("chat_request_received", thread_id=resolved_thread_id)
     try:
