@@ -8,7 +8,8 @@ from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.prebuilt import create_react_agent
+#from langgraph.prebuilt import create_react_agent
+from langchain.agents import create_agent
 
 from backend.src.core.config import get_settings
 from backend.src.rag.prompts import FINAL_REASONING_PROMPT, REACT_PROMPT, SYSTEM_PROMPT
@@ -37,11 +38,11 @@ class ReActRAGGraph:
         self.reasoning_llm = self.llm.with_structured_output(ReasoningOutput)
 
         # Switched to official create_react_agent to fix tool_call_id matching bug.
-        self._agent = create_react_agent(
+        self._agent = create_agent(
             model=self.llm,
             tools=RAG_TOOLS,
             checkpointer=self.checkpointer,
-            state_modifier=f"{SYSTEM_PROMPT}\n\n{REACT_PROMPT}",
+            system_prompt=f"{SYSTEM_PROMPT}\n\n{REACT_PROMPT}",
         )
 
     def compile(self):
