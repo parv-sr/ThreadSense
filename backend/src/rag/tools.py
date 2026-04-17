@@ -18,12 +18,14 @@ logger = structlog.get_logger(__name__)
 
 _retriever_ctx: ContextVar[HybridQdrantRetriever | None] = ContextVar("retriever_ctx", default=None)
 _docs_ctx: ContextVar[list[Document]] = ContextVar("docs_ctx", default=[])
+_hybrid_retrieve_calls_ctx: ContextVar[int] = ContextVar("hybrid_retrieve_calls_ctx", default=0)
 
 
 def set_retriever_context(retriever: HybridQdrantRetriever) -> None:
     """Bind retriever to the current async context for tool execution."""
 
     _retriever_ctx.set(retriever)
+    _hybrid_retrieve_calls_ctx.set(0)
 
 
 def clear_retriever_context() -> None:
@@ -31,6 +33,7 @@ def clear_retriever_context() -> None:
 
     _retriever_ctx.set(None)
     _docs_ctx.set([])
+    _hybrid_retrieve_calls_ctx.set(0)
 
 
 def _coerce_docs(docs: list[Document] | None) -> list[Document]:
@@ -43,6 +46,12 @@ def get_cached_docs() -> list[Document]:
     """Return documents cached by the most recent retrieval/filter tool call."""
 
     return _docs_ctx.get([])
+
+
+def set_cached_docs(docs: list[Document]) -> None:
+    """Persist docs for deterministic/fallback response generation."""
+
+    _docs_ctx.set(docs)
 
 
 @tool("hybrid_retrieve", parse_docstring=True)
@@ -60,6 +69,19 @@ async def hybrid_retrieve(query: str, filters: dict | None = None) -> list[Docum
     retriever = _retriever_ctx.get(None)
     if retriever is None:
         raise RuntimeError("Hybrid retriever context is not initialized")
+
+    calls_so_far: int = _hybrid_retrieve_calls_ctx.get(0)
+    _hybrid_retrieve_calls_ctx.set(calls_so_far + 1)
+    if calls_so_far >= 1:
+        cached_docs: list[Document] = _docs_ctx.get([])
+        logger.warning(
+            "tool_hybrid_retrieve_repeat_guard",
+            query=query,
+            filters=filters,
+            calls=calls_so_far + 1,
+            cached_count=len(cached_docs),
+        )
+        return cached_docs
 
     docs = await retriever.retrieve(query=query, filters=filters, limit=20)
     _docs_ctx.set(docs)
