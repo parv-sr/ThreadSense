@@ -6,7 +6,7 @@ import structlog
 from alembic import command
 from alembic.config import Config
 from qdrant_client import QdrantClient
-from qdrant_client.http.models import Distance, VectorParams
+from qdrant_client.http.models import Distance, VectorParams, PayloadSchemaType
 
 from backend.src.core.config import get_settings
 from backend.src.embeddings.constants import QDRANT_COLLECTION, QDRANT_VECTOR_NAME
@@ -67,6 +67,10 @@ def ensure_qdrant_collection() -> None:
                 )
             },
         )
+        client.create_payload_index(QDRANT_COLLECTION, "bhk", field_schema=PayloadSchemaType.FLOAT)
+        client.create_payload_index(QDRANT_COLLECTION, "location", field_schema=PayloadSchemaType.TEXT)
+        client.create_payload_index(QDRANT_COLLECTION, "sender", field_schema=PayloadSchemaType.KEYWORD)
+        client.create_payload_index(QDRANT_COLLECTION, "price", field_schema=PayloadSchemaType.INTEGER)
         logger.info(
             "startup_qdrant_collection_created",
             collection=QDRANT_COLLECTION,
