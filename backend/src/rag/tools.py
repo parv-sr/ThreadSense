@@ -42,6 +42,34 @@ def _coerce_docs(docs: list[Document] | None) -> list[Document]:
     return _docs_ctx.get([])
 
 
+def _normalize_location(text: str) -> str:
+    normalized: str = str(text).lower()
+    normalized = normalized.replace(" west", " w").replace(" east", " e")
+    normalized = normalized.replace("w.", "w").replace("e.", "e")
+    normalized = " ".join(normalized.split())
+    return normalized
+
+
+def _matches_scalar(metadata_value: Any, criteria_value: Any, key: str) -> bool:
+    if criteria_value is None:
+        return True
+
+    if key == "location":
+        lhs: str = _normalize_location(str(metadata_value or ""))
+        rhs: str = _normalize_location(str(criteria_value))
+        return rhs in lhs or lhs in rhs
+
+    if key == "bhk":
+        try:
+            lhs_bhk: float = float(metadata_value)
+            rhs_bhk: float = float(criteria_value)
+            return abs(lhs_bhk - rhs_bhk) <= 0.51
+        except (TypeError, ValueError):
+            return str(metadata_value or "").strip().lower() == str(criteria_value).strip().lower()
+
+    return str(metadata_value or "").strip().lower() == str(criteria_value).strip().lower()
+
+
 def get_cached_docs() -> list[Document]:
     """Return documents cached by the most recent retrieval/filter tool call."""
 
@@ -118,7 +146,7 @@ async def filter_listings(docs: list[Document], criteria: dict) -> list[Document
                 if float(metadata.get("price_numeric") or 0.0) > float(value):
                     include = False
                     break
-            elif str(metadata.get(key, "")).lower() != str(value).lower():
+            elif not _matches_scalar(metadata.get(key, ""), value, key):
                 include = False
                 break
         if include:

@@ -384,6 +384,76 @@ class ListingExtractionResult(BaseModel):
         return text or None
 
 
+def _extract_first_phone(raw_text: str) -> str | None:
+    candidates: list[str] = re.findall(r"(?:\+?\d[\d\s-]{8,}\d)", raw_text)
+    for candidate in candidates:
+        digits: str = "".join(ch for ch in candidate if ch.isdigit())
+        if len(digits) == 12 and digits.startswith("91"):
+            digits = digits[2:]
+        if len(digits) == 11 and digits.startswith("0"):
+            digits = digits[1:]
+        if len(digits) == 10 and digits[0] in {"6", "7", "8", "9"}:
+            return digits
+    return None
+
+
+def _extract_bhk_from_text(raw_text: str) -> float | None:
+    lowered_text: str = raw_text.lower()
+    if "studio" in lowered_text or "rk" in lowered_text:
+        return 0.5
+    bhk_match: re.Match[str] | None = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:bhk|bed|br)\b", lowered_text)
+    if bhk_match is None:
+        return None
+    try:
+        return float(bhk_match.group(1))
+    except ValueError:
+        return None
+
+
+def _extract_location_from_text(raw_text: str) -> str | None:
+    compact_text: str = re.sub(r"\s+", " ", raw_text).strip()
+    location_patterns: list[str] = [
+        r"\b((?:bandra|khar|santacruz|andheri|juhu|kurla|worli|dadar|chembur|powai|borivali|malad|goregaon|bkc)"
+        r"(?:[\s,/-]+(?:west|w|east|e|reclamation|road|junction|hill|linking|turner|sv|mount mary|tagore road))*)\b",
+    ]
+    for pattern in location_patterns:
+        match: re.Match[str] | None = re.search(pattern, compact_text, flags=re.IGNORECASE)
+        if match is not None:
+            return match.group(1).strip(" ,-")
+    return None
+
+
+def _estimate_confidence(extraction: ListingExtractionResult, raw_text: str) -> float:
+    score: float = 0.2
+    if extraction.location:
+        score += 0.2
+    if extraction.price is not None:
+        score += 0.2
+    if extraction.bhk is not None:
+        score += 0.15
+    if extraction.contact_number:
+        score += 0.15
+    if extraction.property_type != ExtractionPropertyType.UNKNOWN:
+        score += 0.1
+    if extraction.transaction_type in {ExtractionTransactionType.RENT, ExtractionTransactionType.SALE}:
+        score += 0.05
+    if len(raw_text.strip()) < 20:
+        score -= 0.15
+    return max(0.0, min(1.0, round(score, 2)))
+
+
+def _enrich_extraction(extraction: ListingExtractionResult, raw_text: str) -> ListingExtractionResult:
+    if extraction.contact_number is None:
+        extraction.contact_number = _extract_first_phone(raw_text)
+    if extraction.bhk is None:
+        extraction.bhk = _extract_bhk_from_text(raw_text)
+    if extraction.location is None:
+        extraction.location = _extract_location_from_text(raw_text)
+    if extraction.confidence_score <= 0.0:
+        extraction.confidence_score = _estimate_confidence(extraction, raw_text)
+    return extraction
+
+
 class BatchItemResult(BaseModel):
     message_index: int
     listings: list[PropertyListing] = Field(default_factory=list)
@@ -553,48 +623,60 @@ class ListingExtractor:
         if not chunks:
             return [], {}
 
-        prompts: list[str] = []
-        chunk_ids: list[UUID] = []
-        for chunk_id, cleaned_text in chunks:
-            chunk_ids.append(chunk_id)
-            prompt: str = (
+        chunk_ids: list[UUID] = [chunk_id for chunk_id, _ in chunks]
+        message_texts: list[str] = [(cleaned_text or "")[:6000] for _, cleaned_text in chunks]
+        raw_outputs: dict[str, str] = {}
+        extracted_rows: list[tuple[UUID, ListingExtractionResult | None]] = []
+
+        # Primary path: packetized extraction with rich system prompt + envelope schema.
+        packet_results: list[tuple[ListingExtractionResult | None, str | None]] = await self.extract_many(message_texts)
+
+        fallback_ids: list[UUID] = []
+        fallback_prompts: list[str] = []
+
+        for (chunk_id, raw_text), (extracted, raw_output) in zip(chunks, packet_results):
+            if extracted is not None:
+                enriched: ListingExtractionResult = _enrich_extraction(extracted, raw_text)
+                extracted_rows.append((chunk_id, enriched))
+                raw_outputs[str(chunk_id)] = raw_output or enriched.model_dump_json()
+                continue
+
+            fallback_ids.append(chunk_id)
+            fallback_prompts.append(
                 "Extract one real-estate listing from this WhatsApp message. "
                 "If irrelevant, set is_irrelevant=true.\n\n"
-                f"Message:\n{(cleaned_text or '')[:6000]}"
+                f"Message:\n{raw_text[:6000]}"
             )
-            prompts.append(prompt)
+            raw_outputs[str(chunk_id)] = raw_output or "packet_extract_none"
 
-        raw_outputs: dict[str, str] = {}
+        if not fallback_ids:
+            return extracted_rows, raw_outputs
+
+        # Fallback path: single-message function-calling extraction for packet misses.
         try:
-            structured_results: list[PropertyListing] = await self._single_structured_model.abatch(prompts)
+            fallback_results: list[PropertyListing] = await self._single_structured_model.abatch(fallback_prompts)
         except Exception as exc:  # noqa: BLE001
             log.warning(
-                "batch_structured_extract_failed",
-                batch_size=len(chunks),
+                "batch_structured_fallback_failed",
+                fallback_count=len(fallback_ids),
                 error=str(exc),
             )
-            failed_results: list[tuple[UUID, ListingExtractionResult | None]] = [
-                (chunk_id, None) for chunk_id in chunk_ids
-            ]
-            for chunk_id in chunk_ids:
-                raw_outputs[str(chunk_id)] = f"abatch_error:{exc}"
-            return failed_results, raw_outputs
+            for chunk_id in fallback_ids:
+                extracted_rows.append((chunk_id, None))
+                raw_outputs[str(chunk_id)] = f"fallback_abatch_error:{exc}"
+            return extracted_rows, raw_outputs
 
-        extracted_rows: list[tuple[UUID, ListingExtractionResult | None]] = []
-        for chunk_id, structured in zip(chunk_ids, structured_results):
+        text_by_id: dict[UUID, str] = {chunk_id: text for chunk_id, text in chunks}
+        for chunk_id, structured in zip(fallback_ids, fallback_results):
             try:
-                # Re-validate through canonical extraction model to preserve all validators.
                 canonical: ListingExtractionResult = ListingExtractionResult.model_validate(structured.model_dump())
-                extracted_rows.append((chunk_id, canonical))
+                enriched = _enrich_extraction(canonical, text_by_id.get(chunk_id, ""))
+                extracted_rows.append((chunk_id, enriched))
                 raw_outputs[str(chunk_id)] = structured.model_dump_json()
             except Exception as exc:  # noqa: BLE001
-                log.warning(
-                    "batch_structured_extract_validation_failed",
-                    chunk_id=str(chunk_id),
-                    error=str(exc),
-                )
+                log.warning("batch_structured_fallback_validation_failed", chunk_id=str(chunk_id), error=str(exc))
                 extracted_rows.append((chunk_id, None))
-                raw_outputs[str(chunk_id)] = f"validation_error:{exc}"
+                raw_outputs[str(chunk_id)] = f"fallback_validation_error:{exc}"
 
         return extracted_rows, raw_outputs
 
