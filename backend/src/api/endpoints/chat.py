@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from functools import lru_cache
-from time import perf_counter
 from uuid import UUID, uuid4
 
 import structlog
@@ -61,16 +60,10 @@ async def chat(payload: ChatRequest, request: Request) -> ChatResponse:
 
     agent: RAGAgent = get_agent(request)
     resolved_thread_id: str = payload.thread_id or str(uuid4())
-    start_time: float = perf_counter()
 
     logger.info("chat_request_received", thread_id=resolved_thread_id)
     try:
-        result: dict[str, object] = await asyncio.wait_for(
-            agent.invoke(message=payload.message, thread_id=resolved_thread_id),
-            timeout=CHAT_TIMEOUT_SECONDS,
-        )
-        duration_ms: int = int((perf_counter() - start_time) * 1000)
-        logger.info("chat_request_succeeded", thread_id=resolved_thread_id, duration_ms=duration_ms)
+        result: dict[str, object] = await agent.invoke(message=payload.message, thread_id=resolved_thread_id)
         return ChatResponse(**result)
     except asyncio.TimeoutError:
         duration_ms = int((perf_counter() - start_time) * 1000)
@@ -82,8 +75,7 @@ async def chat(payload: ChatRequest, request: Request) -> ChatResponse:
             sources=[],
         )
     except Exception as exc:  # noqa: BLE001
-        duration_ms = int((perf_counter() - start_time) * 1000)
-        logger.error("agent_failed", thread_id=resolved_thread_id, duration_ms=duration_ms, error=str(exc))
+        logger.error("agent_failed", thread_id=resolved_thread_id, error=str(exc))
         return ChatResponse(
             thread_id=resolved_thread_id,
             table_html="",
