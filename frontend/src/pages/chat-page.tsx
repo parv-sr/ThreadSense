@@ -103,8 +103,7 @@ export const ChatPage = () => {
         </div>
       </Card>
 
-        <ChatInput value={input} onChange={setInput} onSubmit={sendMessage} loading={chatMutation.isPending} />
-      </div>
+      <ChatInput value={input} onChange={setInput} onSubmit={sendMessage} loading={chatMutation.isPending} />
 
       <SourceViewerModal
         open={openSource}
