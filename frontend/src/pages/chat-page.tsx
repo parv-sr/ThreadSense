@@ -22,9 +22,10 @@ export const ChatPage = () => {
   const scrollRef = useAutoScroll(messages)
 
   const sendMessage = async () => {
-    if (!input.trim()) return
+    const trimmed = input.trim()
+    if (!trimmed) return
 
-    const userMsg: ChatMessage = { id: crypto.randomUUID(), type: 'user', message: input }
+    const userMsg: ChatMessage = { id: crypto.randomUUID(), type: 'user', message: trimmed }
     setMessages((prev) => [...prev, userMsg])
     setInput('')
 
@@ -46,71 +47,77 @@ export const ChatPage = () => {
   }
 
   return (
-    <section className='flex h-[calc(100vh-180px)] min-h-[560px] flex-col gap-4'>
+    <section className='flex h-[calc(100vh-160px)] min-h-[620px] flex-col gap-4'>
       <div className='flex flex-wrap items-center justify-between gap-3'>
         <div>
-          <h1 className='text-2xl font-semibold tracking-tight'>Chat Workspace</h1>
-          <p className='text-sm text-slate-400'>Thread ID: {threadId}</p>
+          <h1 className='text-2xl font-semibold tracking-tight'>ThreadSense Chat Console</h1>
+          <p className='font-mono-data text-xs text-zinc-400'>THREAD: {threadId}</p>
         </div>
-        <div className='transition hover:-translate-y-0.5'>
-          <Button
-            variant='secondary'
-            onClick={() => {
-              resetThread()
-              setMessages([])
-              toast.success('Started a new conversation.')
-            }}
-          >
-            <PlusCircle className='mr-2 h-4 w-4' /> New Conversation
-          </Button>
-        </div>
+        <Button
+          variant='outline'
+          onClick={() => {
+            resetThread()
+            setMessages([])
+            toast.success('Started a new conversation.')
+          }}
+        >
+          <PlusCircle className='mr-2 h-4 w-4' /> New Conversation
+        </Button>
       </div>
 
-      <Card className='flex-1 overflow-hidden p-0'>
-        <div ref={scrollRef} className='h-full space-y-4 overflow-y-auto p-4'>
-          {messages.length === 0 ? (
-            <div className='grid h-full place-items-center text-center text-slate-400'>
-              <div className='max-w-lg'>
-                <p className='mb-2 text-lg text-slate-100'>Welcome to ThreadSense</p>
-                <p>Ask your first question to generate structured insights from WhatsApp thread data.</p>
+      <div className='grid flex-1 grid-rows-[1fr_auto] gap-4'>
+        <Card className='flex min-h-0 flex-col overflow-hidden border-zinc-800 bg-zinc-950 p-0'>
+          <div className='grid grid-cols-3 border-b border-zinc-800 bg-zinc-900/50 px-4 py-2 text-[11px] uppercase tracking-wider text-zinc-500'>
+            <span>Total Messages: {messages.length}</span>
+            <span className='text-center'>Assistant Responses: {messages.filter((message) => message.type === 'assistant').length}</span>
+            <span className='text-right text-cyan-300'>Transport: HTTP + SSE</span>
+          </div>
+
+          <div ref={scrollRef} className='flex-1 space-y-4 overflow-y-auto p-4'>
+            {messages.length === 0 ? (
+              <div className='grid h-full place-items-center text-center text-zinc-400'>
+                <div className='max-w-xl'>
+                  <p className='mb-2 text-lg text-zinc-100'>Welcome to ThreadSense</p>
+                  <p className='text-sm'>Query WhatsApp property inventory and inspect source-attributed listing rows instantly.</p>
+                </div>
               </div>
-            </div>
-          ) : (
-            messages.map((msg) => (
-              <MessageBubble
-                key={msg.id}
-                item={msg}
-                onSourceClick={(sourceId) => {
-                  setActiveSourceId(sourceId)
-                  setOpenSource(true)
-                }}
-              />
-            ))
-          )}
+            ) : (
+              messages.map((msg) => (
+                <MessageBubble
+                  key={msg.id}
+                  item={msg}
+                  onSourceClick={(sourceId) => {
+                    if (!sourceId) return
+                    setActiveSourceId(sourceId)
+                    setOpenSource(true)
+                  }}
+                />
+              ))
+            )}
 
-          {chatMutation.isPending ? (
-            <div className='mr-auto flex max-w-md items-center gap-2 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-slate-300'>
-              <Loader2 className='h-4 w-4 animate-spin text-cyan-200' /> Thinking through your request...
-            </div>
-          ) : null}
+            {chatMutation.isPending ? (
+              <div className='mr-auto flex max-w-md items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm text-zinc-300'>
+                <Loader2 className='h-4 w-4 animate-spin text-cyan-300' /> Thinking through your request...
+              </div>
+            ) : null}
 
-          {chatMutation.isError ? (
-            <div className='mr-auto flex max-w-md items-center gap-2 rounded-xl border border-red-400/20 bg-red-500/10 px-3 py-2 text-sm text-red-200'>
-              <AlertTriangle className='h-4 w-4' /> Cannot connect to backend. Is the backend server running on port
-              8000?
-            </div>
-          ) : null}
-        </div>
-      </Card>
+            {chatMutation.isError ? (
+              <div className='mr-auto flex max-w-md items-center gap-2 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200'>
+                <AlertTriangle className='h-4 w-4' /> Cannot connect to backend. Verify backend server availability.
+              </div>
+            ) : null}
+          </div>
+        </Card>
 
-      <ChatInput value={input} onChange={setInput} onSubmit={sendMessage} loading={chatMutation.isPending} />
+        <ChatInput value={input} onChange={setInput} onSubmit={sendMessage} loading={chatMutation.isPending} />
+      </div>
 
       <SourceViewerModal
         open={openSource}
         onOpenChange={setOpenSource}
         source={sourceQuery.data}
         loading={sourceQuery.isLoading}
-        error={sourceQuery.isError ? 'Could not load source from /source/{chunk_id}.' : undefined}
+        error={sourceQuery.isError ? 'Could not load source from /chat/source/{chunk_id}.' : undefined}
       />
     </section>
   )

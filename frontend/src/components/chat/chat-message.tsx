@@ -1,6 +1,6 @@
+import { useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
-import { Bot, FileText, User } from 'lucide-react'
-import { Badge } from '@/components/ui/badge'
+import { Bot, User } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
 
@@ -20,11 +20,30 @@ export interface UserMessage {
 
 export type ChatMessage = AssistantMessage | UserMessage
 
-const sanitizeTableHtml = (tableHtml: string) =>
-  tableHtml
-    .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '')
-    .replace(/on\w+="[^"]*"/g, '')
-    .replace(/on\w+='[^']*'/g, '')
+interface ListingRow {
+  config: string
+  price: string
+  location: string
+  area: string
+}
+
+const parseListings = (tableHtml: string): ListingRow[] => {
+  if (!tableHtml?.trim()) return []
+  const parser = new DOMParser()
+  const doc = parser.parseFromString(tableHtml, 'text/html')
+  const rows = Array.from(doc.querySelectorAll('tbody tr'))
+  const fallbackRows = rows.length > 0 ? rows : Array.from(doc.querySelectorAll('tr'))
+
+  return fallbackRows
+    .map((row) => Array.from(row.querySelectorAll('td')).map((td) => td.textContent?.trim() ?? '—'))
+    .filter((cells) => cells.length > 0)
+    .map((cells) => ({
+      config: cells[0] ?? '—',
+      price: cells[1] ?? '—',
+      location: cells[2] ?? '—',
+      area: cells[3] ?? '—',
+    }))
+}
 
 export const MessageBubble = ({
   item,
@@ -33,44 +52,74 @@ export const MessageBubble = ({
   item: ChatMessage
   onSourceClick: (sourceId: string) => void
 }) => {
+  const listings = useMemo(() => (item.type === 'assistant' ? parseListings(item.tableHtml) : []), [item])
+
   if (item.type === 'user') {
     return (
-      <div className='ml-auto flex max-w-2xl animate-in slide-in-from-bottom-1 duration-300 items-start gap-3'>
-        <Card className='border-cyan-400/20 bg-cyan-500/10 p-4'>{item.message}</Card>
-        <div className='rounded-full border border-cyan-300/25 bg-cyan-400/10 p-2'>
-          <User className='h-4 w-4 text-cyan-200' />
+      <div className='ml-auto flex max-w-3xl items-start gap-3'>
+        <Card className='border-zinc-800 bg-zinc-900 p-4 text-zinc-100'>{item.message}</Card>
+        <div className='rounded-full border border-zinc-800 bg-zinc-900 p-2'>
+          <User className='h-4 w-4 text-zinc-300' />
         </div>
       </div>
     )
   }
 
   return (
-    <div className='mr-auto flex max-w-4xl animate-in slide-in-from-bottom-1 duration-300 items-start gap-3'>
-      <div className='rounded-full border border-indigo-300/30 bg-indigo-400/10 p-2'>
-        <Bot className='h-4 w-4 text-indigo-200' />
+    <div className='mr-auto flex w-full max-w-6xl items-start gap-3'>
+      <div className='rounded-full border border-zinc-800 bg-zinc-900 p-2'>
+        <Bot className='h-4 w-4 text-cyan-300' />
       </div>
-      <Card className='space-y-4 p-4'>
-        <div
-          className='overflow-x-auto rounded-xl border border-white/10 bg-slate-950/70 p-3'
-          dangerouslySetInnerHTML={{ __html: sanitizeTableHtml(item.tableHtml) }}
-        />
+      <Card className='w-full space-y-4 border-zinc-800 bg-zinc-950 p-4'>
+        <div className='overflow-x-auto rounded-xl border border-zinc-800 bg-zinc-950'>
+          <table className='w-full border-collapse text-left text-sm'>
+            <thead className='bg-zinc-900 text-xs uppercase tracking-wider text-zinc-400'>
+              <tr>
+                <th className='border-b border-zinc-800 px-3 py-3'>#</th>
+                <th className='border-b border-zinc-800 px-3 py-3'>Configuration</th>
+                <th className='border-b border-zinc-800 px-3 py-3'>Price</th>
+                <th className='border-b border-zinc-800 px-3 py-3'>Location</th>
+                <th className='border-b border-zinc-800 px-3 py-3'>Size/Area</th>
+                <th className='border-b border-zinc-800 px-3 py-3'>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {listings.length === 0 ? (
+                <tr>
+                  <td className='px-3 py-4 text-zinc-500' colSpan={6}>
+                    No tabular listing rows detected.
+                  </td>
+                </tr>
+              ) : (
+                listings.map((listing, index) => (
+                  <tr key={`${item.id}-${index}`} className='border-b border-zinc-800/80'>
+                    <td className='font-mono-data px-3 py-3 text-zinc-400'>{index + 1}</td>
+                    <td className='px-3 py-3 text-zinc-100'>{listing.config}</td>
+                    <td className='font-mono-data px-3 py-3 text-zinc-100'>{listing.price}</td>
+                    <td className='px-3 py-3 text-zinc-300'>{listing.location}</td>
+                    <td className='font-mono-data px-3 py-3 text-zinc-300'>{listing.area}</td>
+                    <td className='px-3 py-3'>
+                      <Button
+                        size='sm'
+                        className='h-7 rounded-md bg-cyan-400 px-2 text-[11px] font-semibold text-zinc-950 hover:bg-cyan-300'
+                        onClick={() => onSourceClick(item.sources[index] ?? item.sources[0])}
+                        disabled={item.sources.length === 0}
+                      >
+                        View Source
+                      </Button>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+
         <div>
-          <p className='mb-2 text-xs uppercase tracking-wide text-slate-400'>Reasoning</p>
-          <div className='prose prose-invert prose-p:leading-relaxed max-w-none text-sm'>
+          <p className='mb-2 text-xs uppercase tracking-wide text-zinc-400'>Reasoning</p>
+          <div className='prose prose-invert prose-p:leading-relaxed max-w-none text-sm text-zinc-300'>
             <ReactMarkdown>{item.reasoning}</ReactMarkdown>
           </div>
-        </div>
-        <div className='flex flex-wrap items-center gap-2'>
-          <Badge className='bg-white/10 text-slate-200'>Sources</Badge>
-          {item.sources.length === 0 ? (
-            <span className='text-xs text-slate-400'>No sources returned.</span>
-          ) : (
-            item.sources.map((source) => (
-              <Button key={source} variant='outline' size='sm' onClick={() => onSourceClick(source)}>
-                <FileText className='mr-2 h-3 w-3' /> View Source
-              </Button>
-            ))
-          )}
         </div>
       </Card>
     </div>

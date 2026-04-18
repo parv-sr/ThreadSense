@@ -1,36 +1,42 @@
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  font-family: 'Inter', 'Geist', system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
   color-scheme: dark;
 }
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(148, 163, 184, 0.35) transparent;
+  scrollbar-color: #3f3f46 transparent;
 }
 
 body {
   margin: 0;
   min-height: 100vh;
-  @apply bg-slate-950 text-slate-100 antialiased;
-  background-image:
-    radial-gradient(circle at 10% -10%, rgba(99, 102, 241, 0.22), transparent 35%),
-    radial-gradient(circle at 90% -5%, rgba(45, 212, 191, 0.2), transparent 35%),
-    radial-gradient(circle at 50% 120%, rgba(147, 51, 234, 0.18), transparent 40%);
-  background-attachment: fixed;
+  @apply bg-zinc-950 text-zinc-100 antialiased;
 }
 
 #root {
   min-height: 100vh;
 }
 
-.glass-panel {
-  @apply border border-white/10 bg-white/5 shadow-2xl shadow-slate-950/40 backdrop-blur-lg;
+.font-mono-data {
+  font-family: 'Geist Mono', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
+    'Courier New', monospace;
 }
 
-.glass-muted {
-  @apply border border-white/10 bg-slate-900/55 backdrop-blur-md;
+.font-ui {
+  font-family: 'Inter', 'Geist', system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+}
+
+.tactile-panel {
+  @apply border border-zinc-800 bg-zinc-950;
+}
+
+.tactile-subtle {
+  @apply border border-zinc-800 bg-zinc-900;
 }
