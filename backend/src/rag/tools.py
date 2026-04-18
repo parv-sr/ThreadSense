@@ -8,6 +8,7 @@ from uuid import UUID
 import structlog
 from langchain_core.documents import Document
 from langchain_core.tools import tool
+from qdrant_client.models import Filter
 
 from backend.src.db.session import AsyncSessionLocal
 from backend.src.models.ingestion import RawMessageChunk
@@ -83,12 +84,17 @@ def set_cached_docs(docs: list[Document]) -> None:
 
 
 @tool("hybrid_retrieve", parse_docstring=True)
-async def hybrid_retrieve(query: str, filters: dict | None = None) -> list[Document]:
+async def hybrid_retrieve(
+    query: str,
+    filters: dict[str, Any] | None = None,
+    qdrant_filter: Filter | None = None,
+) -> list[Document]:
     """Run real hybrid retrieval against Qdrant using dense + sparse retrieval and metadata filters.
 
     Args:
         query: Search query describing desired property listings.
         filters: Optional metadata constraints such as bhk, location, sender, and min/max price.
+        qdrant_filter: Pre-built deterministic Qdrant filter applied before vector search.
 
     Returns:
         Ranked listing documents from Qdrant.
@@ -111,7 +117,8 @@ async def hybrid_retrieve(query: str, filters: dict | None = None) -> list[Docum
         )
         return cached_docs
 
-    docs = await retriever.retrieve(query=query, filters=filters, limit=20)
+    # Deterministic hard filters are executed in Qdrant before vector similarity search.
+    docs = await retriever.retrieve(query=query, filters=filters, qdrant_filter=qdrant_filter, limit=20)
     _docs_ctx.set(docs)
     logger.info("tool_hybrid_retrieve", query=query, filters=filters, count=len(docs))
     return docs

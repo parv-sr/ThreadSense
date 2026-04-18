@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from functools import lru_cache
 from time import perf_counter
 from uuid import UUID, uuid4
@@ -18,18 +17,19 @@ from backend.src.core.config import get_settings
 from backend.src.embeddings.constants import QDRANT_COLLECTION, QDRANT_VECTOR_NAME
 from backend.src.models.ingestion import RawMessageChunk
 from backend.src.rag.agent import RAGAgent
+from backend.src.rag.graph import rag_app
 from backend.src.rag.retriever import HybridQdrantRetriever
+from backend.src.rag.tools import clear_retriever_context, set_retriever_context
 
 logger = structlog.get_logger(__name__)
 settings = get_settings()
 router = APIRouter(prefix="/chat", tags=["chat"])
-CHAT_TIMEOUT_SECONDS: float = 55.0
 
 
 def build_rag_agent() -> RAGAgent:
-    """Build a production RAG agent using pure dense vectors."""
-    logger.info("rag_agent_build_start", qdrant_url=settings.qdrant_endpoint, collection=QDRANT_COLLECTION)
+    """Build resources needed by the deterministic RAG graph and return compatibility wrapper."""
 
+    logger.info("rag_agent_build_start", qdrant_url=settings.qdrant_endpoint, collection=QDRANT_COLLECTION)
     client: QdrantClient = QdrantClient(url=settings.qdrant_endpoint, api_key=settings.qdrant_api_key)
 
     vector_store: QdrantVectorStore = QdrantVectorStore(
@@ -50,40 +50,52 @@ def _cached_agent() -> RAGAgent:
 
 
 def get_agent(request: Request) -> RAGAgent:
-    """Resolve the initialized app-level agent, falling back to cached singleton."""
+    """Resolve the initialized app-level RAG wrapper, falling back to singleton."""
 
     return getattr(request.app.state, "rag_agent", None) or _cached_agent()
 
 
 @router.post("/", response_model=ChatResponse)
 async def chat(payload: ChatRequest, request: Request) -> ChatResponse:
-    """Chat with the fully agentic ReAct RAG workflow."""
+    """Run deterministic LangGraph pipeline: hard filters are applied before vector retrieval."""
 
     agent: RAGAgent = get_agent(request)
     resolved_thread_id: str = payload.thread_id or str(uuid4())
     start_time: float = perf_counter()
 
+    set_retriever_context(agent.retriever)
     logger.info("chat_request_received", thread_id=resolved_thread_id)
     try:
-        result: dict[str, object] = await agent.invoke(message=payload.message, thread_id=resolved_thread_id)
-        return ChatResponse(**result)
-    except asyncio.TimeoutError:
-        duration_ms = int((perf_counter() - start_time) * 1000)
-        logger.error("agent_timeout", thread_id=resolved_thread_id, duration_ms=duration_ms)
+        result: dict[str, object] = await rag_app.ainvoke(
+            {"query": payload.message, "thread_id": resolved_thread_id},
+            config={"configurable": {"thread_id": resolved_thread_id}},
+        )
+        final_answer: object | None = result.get("final_answer")
+        if final_answer is None:
+            raise RuntimeError("RAG graph completed without final_answer")
+
         return ChatResponse(
             thread_id=resolved_thread_id,
-            table_html="",
-            reasoning="Sorry, the request took too long to process. Please try again.",
-            sources=[],
+            table_html=str(getattr(final_answer, "table_html", "")),
+            reasoning=str(getattr(final_answer, "answer", "")),
+            sources=list(getattr(final_answer, "sources", [])),
         )
     except Exception as exc:  # noqa: BLE001
-        logger.error("agent_failed", thread_id=resolved_thread_id, error=str(exc))
+        duration_ms: int = int((perf_counter() - start_time) * 1000)
+        logger.exception(
+            "chat_graph_failed",
+            thread_id=resolved_thread_id,
+            duration_ms=duration_ms,
+            error=str(exc),
+        )
         return ChatResponse(
             thread_id=resolved_thread_id,
             table_html="",
             reasoning="Sorry, I encountered an issue processing your request. Please try again.",
             sources=[],
         )
+    finally:
+        clear_retriever_context()
 
 
 @router.get("/source/{chunk_id}", response_model=SourceResponse)
