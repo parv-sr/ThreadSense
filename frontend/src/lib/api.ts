@@ -116,6 +116,77 @@ export const createProcessingEventSource = (taskId: string): EventSource => {
   return new EventSource(`${API_BASE_URL}${normalized}/${taskId}`)
 }
 
+export interface UploadRecord {
+  id: string
+  name: string
+  status: string
+  uploadedAt: string
+  taskId: string
+  rawfileId: string
+  fileSize: number
+  dedupeStats?: DedupeStats
+}
+
+export interface DedupeStats {
+  total_messages: number
+  system_filtered: number
+  media_count: number
+  keyword_filtered: number
+  local_duplicates: number
+  batch_duplicates: number
+  db_duplicates: number
+  duplicates_removed: number
+  final_unique_chunks: number
+  created_chunks: number
+  ignored_chunks: number
+  parser_failures: number
+  notes: string[]
+}
+
+const DEDUPE_DEFAULTS: DedupeStats = {
+  total_messages: 0,
+  system_filtered: 0,
+  media_count: 0,
+  keyword_filtered: 0,
+  local_duplicates: 0,
+  batch_duplicates: 0,
+  db_duplicates: 0,
+  duplicates_removed: 0,
+  final_unique_chunks: 0,
+  created_chunks: 0,
+  ignored_chunks: 0,
+  parser_failures: 0,
+  notes: [],
+}
+
+export const parseDedupeStats = (value: unknown): DedupeStats => {
+  if (!value || typeof value !== 'object') return DEDUPE_DEFAULTS
+  const source = value as Record<string, unknown>
+  return {
+    ...DEDUPE_DEFAULTS,
+    total_messages: Number(source.total_messages ?? 0),
+    system_filtered: Number(source.system_filtered ?? 0),
+    media_count: Number(source.media_count ?? 0),
+    keyword_filtered: Number(source.keyword_filtered ?? 0),
+    local_duplicates: Number(source.local_duplicates ?? 0),
+    batch_duplicates: Number(source.batch_duplicates ?? 0),
+    db_duplicates: Number(source.db_duplicates ?? 0),
+    duplicates_removed: Number(source.duplicates_removed ?? 0),
+    final_unique_chunks: Number(source.final_unique_chunks ?? 0),
+    created_chunks: Number(source.created_chunks ?? 0),
+    ignored_chunks: Number(source.ignored_chunks ?? 0),
+    parser_failures: Number(source.parser_failures ?? 0),
+    notes: Array.isArray(source.notes) ? source.notes.map((n) => String(n)) : [],
+  }
+}
+
+export const createProcessingEventSource = (taskId: string): EventSource => {
+  const streamPath = import.meta.env.VITE_SSE_PATH ?? '/ingest/stream'
+  const normalized = streamPath.startsWith('/') ? streamPath : `/${streamPath}`
+  const url = `${API_BASE_URL}${normalized}/${taskId}`
+  return new EventSource(url)
+}
+
 export const useChatMutation = () =>
   useMutation({
     mutationFn: async (payload: ChatPayload) => {

@@ -19,7 +19,7 @@ export const Sidebar = () => {
         </div>
         <div>
           <p className='text-lg font-semibold'>ThreadSense</p>
-          <p className='font-mono-data text-xs text-zinc-500'>TACTILE DARK · v1</p>
+          <p className='text-xs text-zinc-400'>Intelligence Workspace</p>
         </div>
       </div>
 

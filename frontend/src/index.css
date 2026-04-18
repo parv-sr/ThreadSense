@@ -25,12 +25,8 @@ body {
 }
 
 .font-mono-data {
-  font-family: 'Geist Mono', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
+  font-family: 'JetBrains Mono', 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
     'Courier New', monospace;
-}
-
-.font-ui {
-  font-family: 'Inter', 'Geist', system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
 }
 
 .tactile-panel {

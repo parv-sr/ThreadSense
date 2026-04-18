@@ -2,13 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useLocation, useParams } from 'react-router-dom'
 import { format } from 'date-fns'
 import { Card } from '@/components/ui/card'
-import {
-  createProcessingEventSource,
-  parseDedupeStats,
-  useTaskStatusQuery,
-  type DedupeStats,
-  type UploadRecord,
-} from '@/lib/api'
+import { createProcessingEventSource, parseDedupeStats, type DedupeStats, type UploadRecord } from '@/lib/api'
 
 const STORAGE_KEY = 'threadsense.uploads'
 
@@ -36,13 +30,10 @@ export const FileDetailsPage = () => {
   const [logLines, setLogLines] = useState<string[]>(['Waiting for processing events...'])
   const [progress, setProgress] = useState<number>(8)
 
-  const taskStatusQuery = useTaskStatusQuery(upload?.taskId, Boolean(upload?.taskId))
-
   useEffect(() => {
     if (upload) return
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return
-
     try {
       const list = JSON.parse(raw) as UploadRecord[]
       const match = list.find((item) => item.rawfileId === rawfileId)
@@ -56,67 +47,28 @@ export const FileDetailsPage = () => {
   }, [rawfileId, upload])
 
   useEffect(() => {
-    const taskStatus = taskStatusQuery.data
-    if (!taskStatus) return
-
-    setStatus(taskStatus.status)
-    if (taskStatus.status === 'COMPLETED') setProgress(100)
-
-    if (taskStatus.result?.dedupe_stats) {
-      setUpload((previous) =>
-        previous
-          ? {
-              ...previous,
-              dedupeStats: parseDedupeStats(taskStatus.result?.dedupe_stats),
-            }
-          : previous,
-      )
-    }
-  }, [taskStatusQuery.data])
-
-  useEffect(() => {
     if (!upload?.taskId) return
 
     const source = createProcessingEventSource(upload.taskId)
-
     source.onmessage = (event) => {
       const next = event.data
-      setLogLines((previous) => [...previous.slice(-199), next])
+      setLogLines((prev) => [...prev.slice(-199), next])
 
       try {
-        const parsed = JSON.parse(next) as {
-          status?: string
-          progress?: number
-          message?: string
-          dedupe_stats?: unknown
-        }
-
+        const parsed = JSON.parse(next) as { status?: string; progress?: number; dedupe_stats?: unknown }
         if (parsed.status) setStatus(parsed.status)
-        if (typeof parsed.progress === 'number') {
-          setProgress(Math.max(2, Math.min(100, parsed.progress)))
-        }
-
+        if (typeof parsed.progress === 'number') setProgress(Math.max(2, Math.min(100, parsed.progress)))
         if (parsed.dedupe_stats) {
-          setUpload((previous) =>
-            previous
-              ? {
-                  ...previous,
-                  dedupeStats: parseDedupeStats(parsed.dedupe_stats),
-                }
-              : previous,
-          )
+          setUpload((prev) => (prev ? { ...prev, dedupeStats: parseDedupeStats(parsed.dedupe_stats) } : prev))
         }
       } catch {
-        if (next.toLowerCase().includes('completed')) {
-          setStatus('COMPLETED')
-          setProgress(100)
-        }
+        if (next.toLowerCase().includes('completed')) setStatus('COMPLETED')
       }
     }
 
-    source.onerror = () => {
-      setLogLines((previous) => [...previous.slice(-199), '[stream] event source disconnected; retry in progress...'])
-    }
+    source.addEventListener('error', () => {
+      setLogLines((prev) => [...prev.slice(-199), '[stream] connection issue. retrying...'])
+    })
 
     return () => {
       source.close()
@@ -143,7 +95,7 @@ export const FileDetailsPage = () => {
           </div>
           <div className='tactile-subtle rounded-xl p-3'>
             <p className='text-xs text-zinc-400'>Raw File ID</p>
-            <p className='font-mono-data truncate text-sm text-zinc-200'>{rawfileId}</p>
+            <p className='font-mono-data text-sm text-zinc-200'>{rawfileId}</p>
           </div>
         </div>
       </Card>
@@ -157,7 +109,7 @@ export const FileDetailsPage = () => {
         <div className='mt-3 h-1 w-full overflow-hidden rounded bg-zinc-800'>
           <div className='h-full bg-cyan-400 transition-all duration-300' style={{ width: `${progress}%` }} />
         </div>
-        <div className='mt-4 max-h-[320px] overflow-auto rounded-xl border border-zinc-800 bg-black p-4'>
+        <div className='mt-4 max-h-[300px] overflow-auto rounded-xl border border-zinc-800 bg-black p-4'>
           {logLines.map((line, index) => (
             <p key={`${line}-${index}`} className='font-mono-data text-xs leading-5 text-zinc-300'>
               {line}
