@@ -52,6 +52,7 @@ export const UploadsPage = () => {
 
   const totals = useMemo(
     () => ({
+      total: uploads.filter((u) => u.status === 'ALREADY_EXISTS').length,
       uploaded: uploads.filter((u) => u.status !== 'ALREADY_EXISTS').length,
       duplicates: uploads.filter((u) => u.status === 'ALREADY_EXISTS').length,
     }),

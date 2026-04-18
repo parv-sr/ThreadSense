@@ -4,6 +4,16 @@ import { format } from 'date-fns'
 import { Card } from '@/components/ui/card'
 import { createProcessingEventSource, parseDedupeStats, type DedupeStats, type UploadRecord } from '@/lib/api'
 
+//Helpers
+
+const isAllDuplicates = (dedupe: any): boolean => {
+  if (!dedupe) return false
+  return(
+    dedupe.total_messages > 0 &&
+    dedupe.final_unique_chunks === 0
+  )
+}
+
 const STORAGE_KEY = 'threadsense.uploads'
 
 const metricCards: Array<{ key: keyof DedupeStats; label: string; emphasis?: boolean }> = [
@@ -102,19 +112,66 @@ export const FileDetailsPage = () => {
 
       <Card className='p-5'>
         <p className='text-xs uppercase tracking-wider text-zinc-500'>Section B · Live Processing</p>
+
+        {/* Smart status header */}
         <div className='mt-2 flex items-center justify-between'>
           <p className='text-sm text-zinc-300'>Overall Status</p>
-          <span className='font-mono-data text-sm text-cyan-300'>{status}</span>
+          {(status === 'PROCESSED' || status === 'COMPLETED') ? (
+            isAllDuplicates(dedupe) ? (
+              <div className="flex items-center gap-2">
+                <span className="rounded-full bg-emerald-950 px-3 py-1 text-xs font-semibold text-emerald-400 border border-emerald-500 flex items-center gap-1">
+                  ✅ COMPLETED
+                </span>
+                <span className="rounded-full bg-amber-950 px-3 py-1 text-xs font-semibold text-amber-400 border border-amber-500">
+                  ALL DUPLICATES
+                </span>
+              </div>
+            ) : (
+              <span className="rounded-full bg-emerald-950 px-3 py-1 text-xs font-semibold text-emerald-400 border border-emerald-500">
+                ✅ COMPLETED
+              </span>
+            )
+          ) : (
+            <span className="rounded-full bg-blue-950 px-3 py-1 text-xs font-semibold text-blue-400 border border-blue-500 animate-pulse">
+              {status}
+            </span>
+          )}
         </div>
+
         <div className='mt-3 h-1 w-full overflow-hidden rounded bg-zinc-800'>
           <div className='h-full bg-cyan-400 transition-all duration-300' style={{ width: `${progress}%` }} />
         </div>
+
+        {/* Live area — now smart about duplicates */}
         <div className='mt-4 max-h-[300px] overflow-auto rounded-xl border border-zinc-800 bg-black p-4'>
-          {logLines.map((line, index) => (
-            <p key={`${line}-${index}`} className='font-mono-data text-xs leading-5 text-zinc-300'>
-              {line}
-            </p>
-          ))}
+          {dedupe && isAllDuplicates(dedupe) ? (
+            <div className="flex gap-6">
+              <div className="text-6xl">🎉</div>
+              <div className="flex-1">
+                <h3 className="text-emerald-300 text-xl font-semibold">
+                  Every message was already in your knowledge base
+                </h3>
+                <p className="text-zinc-300 mt-3">
+                  All{' '}
+                  <span className="font-mono bg-emerald-900/80 px-2 py-0.5 rounded text-emerald-400">
+                    {dedupe.total_messages}
+                  </span>{' '}
+                  messages were duplicates.
+                </p>
+                <p className="text-zinc-400 mt-6 text-sm">
+                  File ingested successfully — no new chunks added.<br />
+                  Your workspace stays clean ✨
+                </p>
+              </div>
+            </div>
+          ) : (
+            /* Normal live log (exactly as before) */
+            logLines.map((line, index) => (
+              <p key={`${line}-${index}`} className='font-mono-data text-xs leading-5 text-zinc-300'>
+                {line}
+              </p>
+            ))
+          )}
         </div>
       </Card>
 
