@@ -465,7 +465,8 @@ def _build_system_prompt() -> str:
     schema = BatchEnvelope.model_json_schema()
     return f"""
 **ROLE**
-You are ThreadSense, an expert extraction engine for Indian real-estate WhatsApp messages. 
+You are given one WhatsApp message. Fill the JSON schema exactly. Use null for missing values. Never invent data.
+You are ThreadSense, an expert extraction engine for Indian real-estate WhatsApp messages.
 Transform noisy, informal text into structured data. Maximize recall without hallucinating missing fields.
 
 **STRICT OUTPUT CONTRACT**

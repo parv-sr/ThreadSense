@@ -1,152 +1,48 @@
 from __future__ import annotations
 
-import json
-from typing import Any, Sequence
+from typing import Any, TypedDict
 
-import structlog
-from langchain_core.documents import Document
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
-from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
-from langchain.agents import create_agent
+from langgraph.graph import END, START, StateGraph
+from qdrant_client.models import Filter
 
-from backend.src.core.config import get_settings
-from backend.src.rag.prompts import FINAL_REASONING_PROMPT, REACT_PROMPT, SYSTEM_PROMPT
-from backend.src.rag.tools import RAG_TOOLS, get_cached_docs
-from backend.src.rag.utils import (
-    ReasoningOutput,
-    extract_chunk_id,
-    extract_sources_from_reasoning,
-    render_table_html,
+from backend.src.rag.nodes import (
+    build_hard_filter_node,
+    final_answer_node,
+    hybrid_retrieval_node,
+    query_parser_node,
+    rerank_grader_node,
 )
-
-logger = structlog.get_logger(__name__)
-settings = get_settings()
+from backend.src.schemas.rag import AnswerWithSources, GradedListing, ParsedQuery
 
 
-class ReActRAGGraph:
-    """ThreadSense graph wrapper built on LangGraph's official ReAct agent."""
+class RAGState(TypedDict):
+    """Deterministic RAG graph state used by LangGraph StateGraph."""
 
-    def __init__(self, model_name: str = "gpt-4o-mini") -> None:
-        self.checkpointer: MemorySaver = MemorySaver()
-        self.llm: ChatOpenAI = ChatOpenAI(
-            model=model_name,
-            temperature=0,
-            api_key=settings.openai_api_key,
-        )
-        self.reasoning_llm = self.llm.with_structured_output(ReasoningOutput)
+    query: str
+    parsed_query: ParsedQuery | None
+    qdrant_filter: Filter | None
+    retrieved_listings: list[Any]
+    graded_listings: list[GradedListing]
+    final_answer: AnswerWithSources | None
+    thread_id: str
 
-        # `create_agent` is the current LangChain v1 entrypoint and compiles to
-        # a LangGraph runtime internally.
-        self._agent = create_agent(
-            model=self.llm,
-            tools=RAG_TOOLS,
-            checkpointer=self.checkpointer,
-            system_prompt=f"{SYSTEM_PROMPT}\n\n{REACT_PROMPT}",
-        )
 
-    def compile(self):
-        """Return compiled LangGraph ReAct agent."""
+# Deterministic pipeline: parse -> hard filter build -> retrieve -> grade -> answer.
+_graph_builder: StateGraph[RAGState] = StateGraph(RAGState)
+_graph_builder.add_node("parser", query_parser_node)
+_graph_builder.add_node("filter_builder", build_hard_filter_node)
+_graph_builder.add_node("retrieval", hybrid_retrieval_node)
+_graph_builder.add_node("grader", rerank_grader_node)
+_graph_builder.add_node("final_answer", final_answer_node)
 
-        return self._agent
+_graph_builder.add_edge(START, "parser")
+_graph_builder.add_edge("parser", "filter_builder")
+_graph_builder.add_edge("filter_builder", "retrieval")
+_graph_builder.add_edge("retrieval", "grader")
+_graph_builder.add_edge("grader", "final_answer")
+_graph_builder.add_edge("final_answer", END)
 
-    async def build_final_response(
-        self,
-        messages: Sequence[BaseMessage],
-        docs_override: Sequence[Document] | None = None,
-    ) -> dict[str, object]:
-        """Build UI response fields from retrieved docs + final assistant reasoning."""
-
-        docs: list[Document] = list(docs_override) if docs_override is not None else list(get_cached_docs())
-        if not docs:
-            empty_table: str = render_table_html([])
-            reasoning: str = (
-                "I could not find matching listings in the current dataset. "
-                "Try loosening budget, location, or BHK constraints and re-run the search."
-            )
-            return {
-                "table_html": empty_table,
-                "reasoning": reasoning,
-                "sources": [],
-            }
-
-        rows: list[dict[str, Any]] = []
-        sources: list[str] = []
-        for doc in docs[:20]:
-            metadata: dict[str, Any] = doc.metadata or {}
-            chunk_id: str | None = extract_chunk_id(doc)
-            if chunk_id:
-                sources.append(chunk_id)
-
-            rows.append(
-                {
-                    "bhk": metadata.get("bhk", "N/A"),
-                    "price": metadata.get("price", metadata.get("price_text", "N/A")),
-                    "location": metadata.get("location", "N/A"),
-                    "contact_number": metadata.get("contact_number", metadata.get("phone", "N/A")),
-                    "timestamp": metadata.get("timestamp", metadata.get("message_start", "N/A")),
-                    "sender": metadata.get("sender", "N/A"),
-                    "listing_id": metadata.get("listing_id", chunk_id),
-                    "chunk_id": chunk_id,
-                }
-            )
-
-        table_html: str = render_table_html(rows)
-        unique_sources: list[str] = sorted(set(sources))
-
-        latest_user_query: str = ""
-        for message in reversed(list(messages)):
-            if isinstance(message, HumanMessage):
-                latest_user_query = str(message.content)
-                break
-
-        evidence: list[dict[str, Any]] = [
-            {
-                "chunk_id": extract_chunk_id(doc),
-                "metadata": doc.metadata,
-                "preview": doc.page_content[:500],
-            }
-            for doc in docs[:12]
-        ]
-
-        final_agent_reasoning: str | None = None
-        for message in reversed(list(messages)):
-            if isinstance(message, AIMessage) and message.content:
-                final_agent_reasoning = str(message.content)
-                break
-
-        if final_agent_reasoning:
-            reasoning = final_agent_reasoning
-        else:
-            try:
-                reasoning_result = await self.reasoning_llm.ainvoke(
-                    [
-                        SystemMessage(content=SYSTEM_PROMPT),
-                        SystemMessage(content=FINAL_REASONING_PROMPT),
-                        HumanMessage(
-                            content=(
-                                f"User query: {latest_user_query}\n"
-                                f"Source IDs: {unique_sources}\n"
-                                f"Evidence JSON: {json.dumps(evidence, default=str)}"
-                            )
-                        ),
-                    ]
-                )
-                reasoning = reasoning_result.reasoning
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("final_reasoning_failed", error=str(exc))
-                citations: str = " ".join(f"[source:{source}]" for source in unique_sources[:6])
-                reasoning = (
-                    "These listings were selected because they best match your requested constraints "
-                    f"based on retrieved evidence. {citations}"
-                )
-
-        cited: list[str] = extract_sources_from_reasoning(reasoning)
-        if unique_sources and not cited:
-            reasoning = reasoning + "\n\n" + " ".join(f"[source:{source}]" for source in unique_sources[:6])
-
-        return {
-            "table_html": table_html,
-            "reasoning": reasoning,
-            "sources": unique_sources,
-        }
+# MemorySaver enables thread_id-scoped conversation continuity via LangGraph checkpointer.
+_checkpointer: MemorySaver = MemorySaver()
+rag_app = _graph_builder.compile(checkpointer=_checkpointer)

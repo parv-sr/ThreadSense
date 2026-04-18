@@ -5,7 +5,7 @@ from typing import Any
 
 import structlog
 from langchain_core.documents import Document
-from qdrant_client.http import models as qmodels
+from qdrant_client.models import FieldCondition, Filter, MatchText, MatchValue, Range
 
 from backend.src.rag.query_parser import parse_query_constraints
 
@@ -19,44 +19,52 @@ class HybridQdrantRetriever:
         self.vector_store = vector_store
 
     @staticmethod
-    def _build_filter(filters: dict[str, Any] | None) -> qmodels.Filter | None:
+    def _build_filter(filters: dict[str, Any] | None) -> Filter | None:
         """Translate API filters into Qdrant filter syntax."""
 
         if not filters:
             return None
 
-        must: list[qmodels.Condition] = []
+        must: list[FieldCondition] = []
 
         if bhk := filters.get("bhk"):
-            must.append(qmodels.FieldCondition(key="bhk", match=qmodels.MatchValue(value=float(bhk))))
+            must.append(FieldCondition(key="bhk", match=MatchValue(value=float(bhk))))
         if location := filters.get("location"):
-            must.append(qmodels.FieldCondition(key="location", match=qmodels.MatchText(text=str(location))))
+            must.append(FieldCondition(key="location", match=MatchText(text=str(location))))
         if sender := filters.get("sender"):
-            must.append(qmodels.FieldCondition(key="sender", match=qmodels.MatchText(text=str(sender))))
+            must.append(FieldCondition(key="sender", match=MatchText(text=str(sender))))
         if listing_id := filters.get("listing_id"):
-            must.append(qmodels.FieldCondition(key="listing_id", match=qmodels.MatchValue(value=str(listing_id))))
+            must.append(FieldCondition(key="listing_id", match=MatchValue(value=str(listing_id))))
 
         min_price = filters.get("min_price")
         max_price = filters.get("max_price")
         if min_price is not None or max_price is not None:
             must.append(
-                qmodels.FieldCondition(
-                    key="price", # Was previously "price_numeric"
-                    range=qmodels.Range(
+                FieldCondition(
+                    key="price",
+                    range=Range(
                         gte=float(min_price) if min_price is not None else None,
                         lte=float(max_price) if max_price is not None else None,
                     ),
                 )
             )
 
-        return qmodels.Filter(must=must) if must else None
+        return Filter(must=must) if must else None
 
-    async def retrieve(self, query: str, *, filters: dict[str, Any] | None = None, limit: int = 20) -> list[Document]:
+    async def retrieve(
+        self,
+        query: str,
+        *,
+        filters: dict[str, Any] | None = None,
+        qdrant_filter: Filter | None = None,
+        limit: int = 20,
+    ) -> list[Document]:
         """Perform dense retrieval + lexical reranking with optional parsed query filters."""
 
         constraints = parse_query_constraints(query)
         merged_filters: dict[str, Any] = {**constraints.filters, **(filters or {})}
-        q_filter = self._build_filter(merged_filters or None)
+        parsed_filter: Filter | None = self._build_filter(merged_filters or None)
+        q_filter: Filter | None = self._merge_filters(parsed_filter, qdrant_filter)
         logger.info(
             "hybrid_retrieval_start",
             query=query,
@@ -80,6 +88,23 @@ class HybridQdrantRetriever:
 
         logger.info("hybrid_retrieval_done", count=len(reranked_docs), candidate_count=len(docs))
         return reranked_docs
+
+
+    @staticmethod
+    def _merge_filters(parsed_filter: Filter | None, external_filter: Filter | None) -> Filter | None:
+        """Combine parsed query filters with deterministic graph-provided hard filters."""
+
+        if parsed_filter is None:
+            return external_filter
+        if external_filter is None:
+            return parsed_filter
+
+        must: list[Any] = []
+        if parsed_filter.must:
+            must.extend(parsed_filter.must)
+        if external_filter.must:
+            must.extend(external_filter.must)
+        return Filter(must=must) if must else None
 
     @staticmethod
     def _lexical_rerank(
