@@ -22,9 +22,10 @@ export const ChatPage = () => {
   const scrollRef = useAutoScroll(messages)
 
   const sendMessage = async () => {
-    if (!input.trim()) return
+    const trimmed = input.trim()
+    if (!trimmed) return
 
-    const userMsg: ChatMessage = { id: crypto.randomUUID(), type: 'user', message: input }
+    const userMsg: ChatMessage = { id: crypto.randomUUID(), type: 'user', message: trimmed }
     setMessages((prev) => [...prev, userMsg])
     setInput('')
 
@@ -46,7 +47,7 @@ export const ChatPage = () => {
   }
 
   return (
-    <section className='flex h-[calc(100vh-180px)] min-h-[560px] flex-col gap-4'>
+    <section className='flex h-[calc(100vh-160px)] min-h-[620px] flex-col gap-4'>
       <div className='flex flex-wrap items-center justify-between gap-3'>
         <div>
           <h1 className='text-2xl font-semibold tracking-tight'>Chat Workspace</h1>
@@ -102,14 +103,15 @@ export const ChatPage = () => {
         </div>
       </Card>
 
-      <ChatInput value={input} onChange={setInput} onSubmit={sendMessage} loading={chatMutation.isPending} />
+        <ChatInput value={input} onChange={setInput} onSubmit={sendMessage} loading={chatMutation.isPending} />
+      </div>
 
       <SourceViewerModal
         open={openSource}
         onOpenChange={setOpenSource}
         source={sourceQuery.data}
         loading={sourceQuery.isLoading}
-        error={sourceQuery.isError ? 'Could not load source from /source/{chunk_id}.' : undefined}
+        error={sourceQuery.isError ? 'Could not load source from /chat/source/{chunk_id}.' : undefined}
       />
     </section>
   )

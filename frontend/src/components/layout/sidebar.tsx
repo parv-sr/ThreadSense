@@ -26,7 +26,7 @@ export const Sidebar = () => {
       <nav className='flex gap-2 md:flex-col'>
         {nav.map((item) => {
           const Icon = item.icon
-          const active = location.pathname === item.to
+          const active = location.pathname === item.to || location.pathname.startsWith(`${item.to}/`)
           return (
             <Link
               key={item.to}

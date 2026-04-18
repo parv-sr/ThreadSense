@@ -73,7 +73,11 @@ export const UploadsPage = () => {
         </div>
       ) : null}
 
-      <div className='grid gap-4 md:grid-cols-2'>
+      <div className='grid gap-4 md:grid-cols-3'>
+        <Card className='p-4'>
+          <p className='text-xs uppercase tracking-wide text-zinc-400'>Total Files</p>
+          <p className='font-mono-data mt-2 text-3xl font-bold'>{totals.total}</p>
+        </Card>
         <Card className='p-4'>
           <p className='text-sm text-zinc-400'>Unique uploads</p>
           <p className='font-mono-data text-3xl font-bold text-zinc-100'>{totals.uploaded}</p>
