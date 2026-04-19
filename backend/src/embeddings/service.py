@@ -21,8 +21,10 @@ settings = get_settings()
 
 class QdrantListingPayload(BaseModel):
     listing_id: str
-    raw_chunk_id: str
+    chunk_id: str
     property_type: str
+    transaction_type: str
+    listing_intent: str
     bhk: float | None = None
     price: int | None = None
     location: str | None = None
@@ -73,24 +75,35 @@ class EmbeddingService:
                     "Qdrant collection vector schema mismatch. "
                     f"Expected '{QDRANT_VECTOR_NAME}', found {sorted(vector_names)}."
                 )
-            self._collection_ready = True
-            return
+        else:
+            await self.qdrant.create_collection(
+                collection_name=QDRANT_COLLECTION,
+                vectors_config={
+                    QDRANT_VECTOR_NAME: qmodels.VectorParams(
+                        size=await self._vector_size(),
+                        distance=qmodels.Distance.COSINE,
+                    )
+                },
+            )
+            log.info("qdrant_collection_created", collection=QDRANT_COLLECTION)
 
-        await self.qdrant.create_collection(
-            collection_name=QDRANT_COLLECTION,
-            vectors_config={
-                QDRANT_VECTOR_NAME: qmodels.VectorParams(
-                    size=await self._vector_size(),
-                    distance=qmodels.Distance.COSINE,
-                )
-            },
-        )
         await self.qdrant.create_payload_index(QDRANT_COLLECTION, "bhk", field_schema=qmodels.PayloadSchemaType.FLOAT)
         await self.qdrant.create_payload_index(QDRANT_COLLECTION, "location", field_schema=qmodels.PayloadSchemaType.TEXT)
         await self.qdrant.create_payload_index(QDRANT_COLLECTION, "sender", field_schema=qmodels.PayloadSchemaType.KEYWORD)
         await self.qdrant.create_payload_index(QDRANT_COLLECTION, "price", field_schema=qmodels.PayloadSchemaType.INTEGER)
+        await self.qdrant.create_payload_index(
+            QDRANT_COLLECTION, "transaction_type", field_schema=qmodels.PayloadSchemaType.KEYWORD
+        )
+        await self.qdrant.create_payload_index(
+            QDRANT_COLLECTION, "property_type", field_schema=qmodels.PayloadSchemaType.KEYWORD
+        )
+        await self.qdrant.create_payload_index(
+            QDRANT_COLLECTION, "listing_intent", field_schema=qmodels.PayloadSchemaType.KEYWORD
+        )
+        await self.qdrant.create_payload_index(
+            QDRANT_COLLECTION, "chunk_id", field_schema=qmodels.PayloadSchemaType.KEYWORD
+        )
         self._collection_ready = True
-        log.info("qdrant_collection_created", collection=QDRANT_COLLECTION)
 
     @retry(
         stop=stop_after_attempt(3),
@@ -122,8 +135,10 @@ class EmbeddingService:
         elif listing is not None and chunk_content is not None:
             fallback_payload: QdrantListingPayload = QdrantListingPayload(
                 listing_id=str(listing.id),
-                raw_chunk_id=str(listing.raw_chunk_id),
+                chunk_id=str(listing.raw_chunk_id),
                 property_type=listing.property_type.value,
+                transaction_type=listing.transaction_type.value,
+                listing_intent=listing.listing_intent.value,
                 bhk=listing.bhk,
                 price=listing.price,
                 location=listing.location,
@@ -168,8 +183,10 @@ class EmbeddingService:
             try:
                 payload_model: QdrantListingPayload = QdrantListingPayload(
                     listing_id=str(listing.id),
-                    raw_chunk_id=str(listing.raw_chunk_id),
+                    chunk_id=str(listing.raw_chunk_id),
                     property_type=listing.property_type.value,
+                    transaction_type=listing.transaction_type.value,
+                    listing_intent=listing.listing_intent.value,
                     bhk=listing.bhk,
                     price=listing.price,
                     location=listing.location,

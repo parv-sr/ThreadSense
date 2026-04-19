@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, TypedDict
 
-from langgraph.checkpoint.memory import MemorySaver
+import structlog
+from langgraph.checkpoint.redis.aio import AsyncRedisSaver
 from langgraph.graph import END, START, StateGraph
 from qdrant_client.models import Filter
 
+from backend.src.core.config import get_settings
 from backend.src.rag.nodes import (
     build_hard_filter_node,
     final_answer_node,
@@ -14,6 +17,9 @@ from backend.src.rag.nodes import (
     rerank_grader_node,
 )
 from backend.src.schemas.rag import AnswerWithSources, GradedListing, ParsedQuery
+
+settings = get_settings()
+logger = structlog.get_logger(__name__)
 
 
 class RAGState(TypedDict):
@@ -43,6 +49,13 @@ _graph_builder.add_edge("retrieval", "grader")
 _graph_builder.add_edge("grader", "final_answer")
 _graph_builder.add_edge("final_answer", END)
 
-# MemorySaver enables thread_id-scoped conversation continuity via LangGraph checkpointer.
-_checkpointer: MemorySaver = MemorySaver()
+# Redis checkpointer persists thread state across worker processes.
+_checkpointer: AsyncRedisSaver | None
+try:
+    _checkpointer = AsyncRedisSaver(redis_url=settings.redis_broker_url)
+    asyncio.run(_checkpointer.asetup())
+except Exception as exc:  # noqa: BLE001
+    logger.warning("rag_redis_checkpointer_unavailable", error=str(exc))
+    _checkpointer = None
+
 rag_app = _graph_builder.compile(checkpointer=_checkpointer)

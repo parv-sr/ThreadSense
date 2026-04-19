@@ -13,10 +13,12 @@ from backend.src.embeddings.service import EmbeddingService
 from backend.src.models.ingestion import RawMessageChunk, RawMessageChunkStatus
 from backend.src.models.preprocessing import (
     FurnishedType,
+    ListingIntent,
     ListingChunk,
     ListingStatus,
     PropertyListing,
     PropertyType,
+    TransactionType,
 )
 from backend.src.preprocessing.extractor import ListingExtractor, ListingExtractionResult, to_embedding_text
 
@@ -84,6 +86,12 @@ class PreprocessingPipeline:
                             status=ListingStatus.EXTRACTED,
                             raw_llm_output=raw_output,
                             property_type=PropertyType(result.property_type.value),
+                            transaction_type=TransactionType(result.transaction_type.value)
+                            if result.transaction_type is not None
+                            else TransactionType.UNKNOWN,
+                            listing_intent=ListingIntent(result.listing_intent.value)
+                            if result.listing_intent is not None
+                            else ListingIntent.UNKNOWN,
                             bhk=result.bhk,
                             price=result.price,
                             location=result.location,

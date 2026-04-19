@@ -6,7 +6,7 @@ import structlog
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from backend.src.api.endpoints.chat import build_rag_agent
+from backend.src.api.endpoints.chat import build_retriever
 from backend.src.api.main_router import api_router
 from backend.src.core.config import get_settings
 from backend.src.db.diagnostics import PROBE_SQL, mask_database_url
@@ -50,11 +50,11 @@ async def lifespan(app: FastAPI):
         )
 
     try:
-        app.state.rag_agent = build_rag_agent()
-        logger.info("rag_agent_ready")
+        app.state.rag_retriever = build_retriever()
+        logger.info("rag_retriever_ready")
     except Exception as exc:  # noqa: BLE001
-        app.state.rag_agent = None
-        logger.exception("rag_agent_init_failed", error=str(exc))
+        app.state.rag_retriever = None
+        logger.exception("rag_retriever_init_failed", error=str(exc))
 
     try:
         yield

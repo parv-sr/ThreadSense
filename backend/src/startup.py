@@ -56,26 +56,30 @@ def ensure_qdrant_collection() -> None:
                 collection=QDRANT_COLLECTION,
                 vector_name=QDRANT_VECTOR_NAME,
             )
-            return
+        else:
+            client.create_collection(
+                collection_name=QDRANT_COLLECTION,
+                vectors_config={
+                    QDRANT_VECTOR_NAME: VectorParams(
+                        size=VECTOR_SIZE,
+                        distance=Distance.COSINE,
+                    )
+                },
+            )
+            logger.info(
+                "startup_qdrant_collection_created",
+                collection=QDRANT_COLLECTION,
+                vector_name=QDRANT_VECTOR_NAME,
+            )
 
-        client.create_collection(
-            collection_name=QDRANT_COLLECTION,
-            vectors_config={
-                QDRANT_VECTOR_NAME: VectorParams(
-                    size=VECTOR_SIZE,
-                    distance=Distance.COSINE,
-                )
-            },
-        )
         client.create_payload_index(QDRANT_COLLECTION, "bhk", field_schema=PayloadSchemaType.FLOAT)
         client.create_payload_index(QDRANT_COLLECTION, "location", field_schema=PayloadSchemaType.TEXT)
         client.create_payload_index(QDRANT_COLLECTION, "sender", field_schema=PayloadSchemaType.KEYWORD)
         client.create_payload_index(QDRANT_COLLECTION, "price", field_schema=PayloadSchemaType.INTEGER)
-        logger.info(
-            "startup_qdrant_collection_created",
-            collection=QDRANT_COLLECTION,
-            vector_name=QDRANT_VECTOR_NAME,
-        )
+        client.create_payload_index(QDRANT_COLLECTION, "transaction_type", field_schema=PayloadSchemaType.KEYWORD)
+        client.create_payload_index(QDRANT_COLLECTION, "property_type", field_schema=PayloadSchemaType.KEYWORD)
+        client.create_payload_index(QDRANT_COLLECTION, "listing_intent", field_schema=PayloadSchemaType.KEYWORD)
+        client.create_payload_index(QDRANT_COLLECTION, "chunk_id", field_schema=PayloadSchemaType.KEYWORD)
     finally:
         client.close()
 

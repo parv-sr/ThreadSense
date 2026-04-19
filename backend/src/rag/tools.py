@@ -87,6 +87,7 @@ def set_cached_docs(docs: list[Document]) -> None:
 async def hybrid_retrieve(
     query: str,
     filters: dict[str, Any] | None = None,
+    parsed_filters: dict[str, Any] | None = None,
     qdrant_filter: Filter | None = None,
 ) -> list[Document]:
     """Run real hybrid retrieval against Qdrant using dense + sparse retrieval and metadata filters.
@@ -94,6 +95,7 @@ async def hybrid_retrieve(
     Args:
         query: Search query describing desired property listings.
         filters: Optional metadata constraints such as bhk, location, sender, and min/max price.
+        parsed_filters: Optional deterministic filters from ParsedQuery; when present regex parsing is skipped.
         qdrant_filter: Pre-built deterministic Qdrant filter applied before vector search.
 
     Returns:
@@ -118,7 +120,13 @@ async def hybrid_retrieve(
         return cached_docs
 
     # Deterministic hard filters are executed in Qdrant before vector similarity search.
-    docs = await retriever.retrieve(query=query, filters=filters, qdrant_filter=qdrant_filter, limit=20)
+    docs = await retriever.retrieve(
+        query=query,
+        filters=filters,
+        parsed_filters=parsed_filters,
+        qdrant_filter=qdrant_filter,
+        limit=20,
+    )
     _docs_ctx.set(docs)
     logger.info("tool_hybrid_retrieve", query=query, filters=filters, count=len(docs))
     return docs

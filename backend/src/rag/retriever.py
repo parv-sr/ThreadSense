@@ -35,6 +35,27 @@ class HybridQdrantRetriever:
             must.append(FieldCondition(key="sender", match=MatchText(text=str(sender))))
         if listing_id := filters.get("listing_id"):
             must.append(FieldCondition(key="listing_id", match=MatchValue(value=str(listing_id))))
+        if transaction_type := filters.get("transaction_type"):
+            must.append(
+                FieldCondition(
+                    key="transaction_type",
+                    match=MatchValue(value=str(transaction_type).upper()),
+                )
+            )
+        if property_type := filters.get("property_type"):
+            must.append(
+                FieldCondition(
+                    key="property_type",
+                    match=MatchValue(value=str(property_type).upper()),
+                )
+            )
+        if listing_intent := filters.get("listing_intent"):
+            must.append(
+                FieldCondition(
+                    key="listing_intent",
+                    match=MatchValue(value=str(listing_intent).upper()),
+                )
+            )
 
         min_price = filters.get("min_price")
         max_price = filters.get("max_price")
@@ -56,20 +77,27 @@ class HybridQdrantRetriever:
         query: str,
         *,
         filters: dict[str, Any] | None = None,
+        parsed_filters: dict[str, Any] | None = None,
         qdrant_filter: Filter | None = None,
         limit: int = 20,
     ) -> list[Document]:
         """Perform dense retrieval + lexical reranking with optional parsed query filters."""
 
-        constraints = parse_query_constraints(query)
-        merged_filters: dict[str, Any] = {**constraints.filters, **(filters or {})}
+        constraints = parse_query_constraints(query) if parsed_filters is None else None
+        merged_filters: dict[str, Any] = (
+            dict(parsed_filters)
+            if parsed_filters is not None
+            else {**(constraints.filters if constraints is not None else {}), **(filters or {})}
+        )
         parsed_filter: Filter | None = self._build_filter(merged_filters or None)
         q_filter: Filter | None = self._merge_filters(parsed_filter, qdrant_filter)
+        normalized_query: str = constraints.normalized_query if constraints is not None else query
+        parsed_constraints: dict[str, Any] | None = constraints.filters if constraints is not None else None
         logger.info(
             "hybrid_retrieval_start",
             query=query,
-            normalized_query=constraints.normalized_query,
-            parsed_filters=constraints.filters,
+            normalized_query=normalized_query,
+            parsed_filters=parsed_constraints,
             filters=merged_filters or None,
             limit=limit,
         )
@@ -78,10 +106,10 @@ class HybridQdrantRetriever:
             search_type="similarity",
             search_kwargs={"k": max(limit * 3, 40), "filter": q_filter},
         )
-        docs = await retriever.ainvoke(constraints.normalized_query or query)
+        docs = await retriever.ainvoke(normalized_query or query)
         reranked_docs = self._lexical_rerank(
             docs=list(docs),
-            query=constraints.normalized_query or query,
+            query=normalized_query or query,
             parsed_filters=merged_filters,
             top_k=limit,
         )

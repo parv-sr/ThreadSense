@@ -7,11 +7,18 @@ import structlog
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
-from qdrant_client.models import FieldCondition, Filter, MatchValue, Range
+from qdrant_client.models import FieldCondition, Filter, MatchText, MatchValue, Range
 
 from backend.src.core.config import get_settings
 from backend.src.rag.tools import hybrid_retrieve
-from backend.src.schemas.rag import AnswerWithSources, GradedListing, ParsedQuery
+from backend.src.rag.utils import render_table_html
+from backend.src.schemas.rag import (
+    AnswerWithSources,
+    FinalAnswerLLMOutput,
+    GradedListing,
+    GradingResponse,
+    ParsedQuery,
+)
 
 logger = structlog.get_logger(__name__)
 settings = get_settings()
@@ -75,7 +82,21 @@ async def build_hard_filter_node(state: dict[str, Any]) -> dict[str, Any]:
             )
         )
     if parsed_query.location:
-        must_conditions.append(FieldCondition(key="location", match=MatchValue(value=parsed_query.location)))
+        must_conditions.append(FieldCondition(key="location", match=MatchText(text=parsed_query.location)))
+    if parsed_query.transaction_type:
+        must_conditions.append(
+            FieldCondition(
+                key="transaction_type",
+                match=MatchValue(value=parsed_query.transaction_type.upper()),
+            )
+        )
+    if parsed_query.property_type:
+        must_conditions.append(
+            FieldCondition(
+                key="property_type",
+                match=MatchValue(value=parsed_query.property_type.upper()),
+            )
+        )
     if parsed_query.parkings_required is not None:
         must_conditions.append(
             FieldCondition(
@@ -94,11 +115,15 @@ async def build_hard_filter_node(state: dict[str, Any]) -> dict[str, Any]:
         "area_min": parsed_query.area_min,
         "area_max": parsed_query.area_max,
         "location": parsed_query.location,
+        "transaction_type": parsed_query.transaction_type,
+        "property_type": parsed_query.property_type,
+        "listing_intent": parsed_query.listing_intent,
         "parkings_required": parsed_query.parkings_required,
     }
-    parsed_query.hard_filters = {k: v for k, v in hard_filters.items() if v is not None}
-    logger.info("rag_hard_filter_built", hard_filters=parsed_query.hard_filters)
-    return {"qdrant_filter": qdrant_filter, "parsed_query": parsed_query}
+    resolved_hard_filters: dict[str, Any] = {k: v for k, v in hard_filters.items() if v is not None}
+    updated_query: ParsedQuery = parsed_query.model_copy(update={"hard_filters": resolved_hard_filters})
+    logger.info("rag_hard_filter_built", hard_filters=resolved_hard_filters)
+    return {"qdrant_filter": qdrant_filter, "parsed_query": updated_query}
 
 
 async def hybrid_retrieval_node(state: dict[str, Any]) -> dict[str, Any]:
@@ -106,8 +131,31 @@ async def hybrid_retrieval_node(state: dict[str, Any]) -> dict[str, Any]:
 
     query_text: str = str(state.get("query") or "")
     qdrant_filter: Filter | None = state.get("qdrant_filter")
+    parsed_query: ParsedQuery | None = state.get("parsed_query")
+    explicit_filters: dict[str, Any] = (
+        {
+            k: v
+            for k, v in {
+                "bhk": parsed_query.bhk_min if parsed_query else None,
+                "min_price": parsed_query.price_min if parsed_query else None,
+                "max_price": parsed_query.price_max if parsed_query else None,
+                "location": parsed_query.location if parsed_query else None,
+                "transaction_type": parsed_query.transaction_type if parsed_query else None,
+                "property_type": parsed_query.property_type if parsed_query else None,
+                "listing_intent": parsed_query.listing_intent if parsed_query else None,
+            }.items()
+            if v is not None
+        }
+        if parsed_query
+        else {}
+    )
     docs: list[Document] = await hybrid_retrieve.ainvoke(
-        {"query": query_text, "filters": None, "qdrant_filter": qdrant_filter}
+        {
+            "query": query_text,
+            "filters": explicit_filters,
+            "parsed_filters": explicit_filters,
+            "qdrant_filter": qdrant_filter,
+        }
     )
     return {"retrieved_listings": docs}
 
@@ -131,12 +179,13 @@ async def rerank_grader_node(state: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
-    grader: Any = _grader_llm.with_structured_output(list[GradedListing])
-    graded_listings: list[GradedListing] = await grader.ainvoke(
+    grader: Any = _grader_llm.with_structured_output(GradingResponse)
+    response: GradingResponse = await grader.ainvoke(
         [
             SystemMessage(
                 content=(
                     "You grade real estate results. "
+                    "Return a JSON object with a `results` array. Each element is one GradedListing. "
                     "Return one GradedListing per input listing_id. relevance_score must be 0..1. "
                     "is_valid=true only if listing satisfies hard constraints and matches query intent."
                 )
@@ -150,6 +199,7 @@ async def rerank_grader_node(state: dict[str, Any]) -> dict[str, Any]:
             ),
         ]
     )
+    graded_listings: list[GradedListing] = response.results
     logger.info("rag_listings_graded", graded_count=len(graded_listings))
     return {"graded_listings": graded_listings}
 
@@ -181,25 +231,37 @@ async def final_answer_node(state: dict[str, Any]) -> dict[str, Any]:
         selected.append(
             {
                 "listing_id": grade.listing_id,
+                "chunk_id": metadata.get("chunk_id"),
                 "relevance_score": grade.relevance_score,
                 "reason": grade.reason,
                 "price": metadata.get("price"),
                 "bhk": metadata.get("bhk"),
                 "area_sqft": metadata.get("area_sqft"),
                 "location": metadata.get("location"),
+                "landmark": metadata.get("landmark"),
+                "furnished": metadata.get("furnished"),
+                "floor_number": metadata.get("floor_number"),
+                "total_floors": metadata.get("total_floors"),
                 "parking": metadata.get("parking"),
-                "chunk_id": metadata.get("chunk_id"),
+                "contact_number": metadata.get("contact_number"),
+                "sender": metadata.get("sender"),
+                "timestamp": metadata.get("timestamp"),
+                "transaction_type": metadata.get("transaction_type"),
+                "property_type": metadata.get("property_type"),
+                "is_verified": metadata.get("is_verified"),
+                "confidence_score": metadata.get("confidence_score"),
             }
         )
 
-    answer_builder: Any = _final_llm.with_structured_output(AnswerWithSources)
-    final_answer: AnswerWithSources = await answer_builder.ainvoke(
+    answer_builder: Any = _final_llm.with_structured_output(FinalAnswerLLMOutput)
+    llm_answer: FinalAnswerLLMOutput = await answer_builder.ainvoke(
         [
             SystemMessage(
                 content=(
                     "Produce AnswerWithSources. "
                     "answer must clearly explain how results match constraints. "
-                    "table_html must be valid HTML table rows with listing_id and source citation. "
+                    "Do not generate HTML. "
+                    "Return only answer, sources, and confidence. "
                     "sources must contain source IDs only. confidence must be 0..1."
                 )
             ),
@@ -211,4 +273,27 @@ async def final_answer_node(state: dict[str, Any]) -> dict[str, Any]:
             ),
         ]
     )
-    return {"final_answer": final_answer}
+    table_rows: list[dict[str, Any]] = []
+    for item in selected:
+        table_rows.append(
+            {
+                "bhk": item.get("bhk", "N/A"),
+                "price": item.get("price", "N/A"),
+                "location": item.get("location", "N/A"),
+                "contact_number": item.get("contact_number", "N/A"),
+                "timestamp": item.get("timestamp", "N/A"),
+                "sender": item.get("sender", "N/A"),
+                "listing_id": item.get("listing_id", ""),
+                "chunk_id": item.get("chunk_id", ""),
+            }
+        )
+
+    table_html: str = render_table_html(table_rows)
+    return {
+        "final_answer": AnswerWithSources(
+            answer=llm_answer.answer,
+            table_html=table_html,
+            sources=llm_answer.sources,
+            confidence=llm_answer.confidence,
+        )
+    }
