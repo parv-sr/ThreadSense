@@ -621,7 +621,6 @@ class ListingExtractor:
         if not chunks:
             return [], {}
 
-        chunk_ids: list[UUID] = [chunk_id for chunk_id, _ in chunks]
         message_texts: list[str] = [(cleaned_text or "")[:6000] for _, cleaned_text in chunks]
         raw_outputs: dict[str, str] = {}
         extracted_rows: list[tuple[UUID, ListingExtractionResult | None]] = []
@@ -684,6 +683,8 @@ def to_embedding_text(extraction: ListingExtractionResult, original_text: str) -
     fields.append(f"PropertyType: {extraction.property_type}")
     fields.append(f"Intent: {extraction.listing_intent}")
     fields.append(f"Transaction: {extraction.transaction_type}")
+    fields.append(f"TransactionType: {extraction.transaction_type}")
+    fields.append(f"ListingIntent: {extraction.listing_intent}")
 
     if extraction.bhk is not None:
         fields.append(f"BHK: {extraction.bhk}")

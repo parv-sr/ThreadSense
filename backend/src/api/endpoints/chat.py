@@ -16,7 +16,6 @@ from backend.src.api.schemas.chat import ChatRequest, ChatResponse, SourceRespon
 from backend.src.core.config import get_settings
 from backend.src.embeddings.constants import QDRANT_COLLECTION, QDRANT_VECTOR_NAME
 from backend.src.models.ingestion import RawMessageChunk
-from backend.src.rag.agent import RAGAgent
 from backend.src.rag.graph import rag_app
 from backend.src.rag.retriever import HybridQdrantRetriever
 from backend.src.rag.tools import clear_retriever_context, set_retriever_context
@@ -26,10 +25,10 @@ settings = get_settings()
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
-def build_rag_agent() -> RAGAgent:
-    """Build resources needed by the deterministic RAG graph and return compatibility wrapper."""
+def build_retriever() -> HybridQdrantRetriever:
+    """Build the shared HybridQdrantRetriever used by the deterministic RAG graph."""
 
-    logger.info("rag_agent_build_start", qdrant_url=settings.qdrant_endpoint, collection=QDRANT_COLLECTION)
+    logger.info("rag_retriever_build_start", qdrant_url=settings.qdrant_endpoint, collection=QDRANT_COLLECTION)
     client: QdrantClient = QdrantClient(url=settings.qdrant_endpoint, api_key=settings.qdrant_api_key)
 
     vector_store: QdrantVectorStore = QdrantVectorStore(
@@ -41,29 +40,29 @@ def build_rag_agent() -> RAGAgent:
     )
 
     retriever: HybridQdrantRetriever = HybridQdrantRetriever(vector_store)
-    return RAGAgent(retriever)
+    return retriever
 
 
 @lru_cache(maxsize=1)
-def _cached_agent() -> RAGAgent:
-    return build_rag_agent()
+def _cached_retriever() -> HybridQdrantRetriever:
+    return build_retriever()
 
 
-def get_agent(request: Request) -> RAGAgent:
-    """Resolve the initialized app-level RAG wrapper, falling back to singleton."""
+def get_retriever(request: Request) -> HybridQdrantRetriever:
+    """Resolve the initialized app-level retriever, falling back to singleton."""
 
-    return getattr(request.app.state, "rag_agent", None) or _cached_agent()
+    return getattr(request.app.state, "rag_retriever", None) or _cached_retriever()
 
 
 @router.post("/", response_model=ChatResponse)
 async def chat(payload: ChatRequest, request: Request) -> ChatResponse:
     """Run deterministic LangGraph pipeline: hard filters are applied before vector retrieval."""
 
-    agent: RAGAgent = get_agent(request)
+    retriever: HybridQdrantRetriever = get_retriever(request)
     resolved_thread_id: str = payload.thread_id or str(uuid4())
     start_time: float = perf_counter()
 
-    set_retriever_context(agent.retriever)
+    set_retriever_context(retriever)
     logger.info("chat_request_received", thread_id=resolved_thread_id)
     try:
         result: dict[str, object] = await rag_app.ainvoke(

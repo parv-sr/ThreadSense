@@ -32,6 +32,18 @@ class PropertyType(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
+class TransactionType(StrEnum):
+    RENT = "RENT"
+    SALE = "SALE"
+    UNKNOWN = "UNKNOWN"
+
+
+class ListingIntent(StrEnum):
+    OFFER = "OFFER"
+    REQUEST = "REQUEST"
+    UNKNOWN = "UNKNOWN"
+
+
 class FurnishedType(StrEnum):
     FULLY_FURNISHED = "FULLY_FURNISHED"
     SEMI_FURNISHED = "SEMI_FURNISHED"
@@ -60,6 +72,16 @@ class PropertyListing(Base):
         Enum(PropertyType, name="property_type_enum"),
         nullable=False,
         default=PropertyType.OTHER,
+    )
+    transaction_type: Mapped[TransactionType] = mapped_column(
+        Enum(TransactionType, name="transaction_type_enum"),
+        nullable=False,
+        default=TransactionType.UNKNOWN,
+    )
+    listing_intent: Mapped[ListingIntent] = mapped_column(
+        Enum(ListingIntent, name="listing_intent_enum"),
+        nullable=False,
+        default=ListingIntent.UNKNOWN,
     )
     bhk: Mapped[float | None] = mapped_column(Float, nullable=True)
     price: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
@@ -107,6 +129,8 @@ class PropertyListing(Base):
     __table_args__ = (
         Index("ix_property_listings_raw_chunk_id", "raw_chunk_id"),
         Index("ix_property_listings_property_type", "property_type"),
+        Index("ix_property_listings_transaction_type", "transaction_type"),
+        Index("ix_property_listings_listing_intent", "listing_intent"),
         Index("ix_property_listings_price", "price"),
         Index("ix_property_listings_status", "status"),
     )
