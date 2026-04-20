@@ -37,6 +37,8 @@ def build_retriever() -> HybridQdrantRetriever:
         embedding=OpenAIEmbeddings(model=settings.openai_embedding_model),
         retrieval_mode=RetrievalMode.DENSE,
         vector_name=QDRANT_VECTOR_NAME,
+        content_payload_key="content",
+        metadata_payload_key=None,
     )
 
     retriever: HybridQdrantRetriever = HybridQdrantRetriever(vector_store)
