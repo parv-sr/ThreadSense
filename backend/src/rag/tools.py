@@ -27,6 +27,7 @@ def set_retriever_context(retriever: HybridQdrantRetriever) -> None:
 
     _retriever_ctx.set(retriever)
     _hybrid_retrieve_calls_ctx.set(0)
+    logger.debug("tool_retriever_context_set")
 
 
 def clear_retriever_context() -> None:
@@ -35,6 +36,7 @@ def clear_retriever_context() -> None:
     _retriever_ctx.set(None)
     _docs_ctx.set([])
     _hybrid_retrieve_calls_ctx.set(0)
+    logger.debug("tool_retriever_context_cleared")
 
 
 def _coerce_docs(docs: list[Document] | None) -> list[Document]:
@@ -81,6 +83,7 @@ def set_cached_docs(docs: list[Document]) -> None:
     """Persist docs for deterministic/fallback response generation."""
 
     _docs_ctx.set(docs)
+    logger.debug("tool_docs_cached", count=len(docs))
 
 
 @tool("hybrid_retrieve", parse_docstring=True)
@@ -120,6 +123,16 @@ async def hybrid_retrieve(
         return cached_docs
 
     # Deterministic hard filters are executed in Qdrant before vector similarity search.
+    serialized_qdrant_filter: dict[str, Any] | None = (
+        qdrant_filter.model_dump(mode="json", exclude_none=True) if qdrant_filter is not None else None
+    )
+    logger.info(
+        "tool_hybrid_retrieve_start",
+        query=query,
+        filters=filters,
+        parsed_filters=parsed_filters,
+        qdrant_filter=serialized_qdrant_filter,
+    )
     docs = await retriever.retrieve(
         query=query,
         filters=filters,
@@ -148,8 +161,8 @@ async def filter_listings(docs: list[Document], criteria: dict) -> list[Document
     output: list[Document] = []
 
     for doc in candidates:
-        metadata = doc.metadata or {}
-        include = True
+        metadata: dict[str, Any] = doc.metadata or {}
+        include: bool = True
         for key, value in (criteria or {}).items():
             if value is None:
                 continue
@@ -191,8 +204,10 @@ async def get_listing_details(chunk_id: str) -> dict[str, Any]:
     async with AsyncSessionLocal() as session:
         chunk = await session.get(RawMessageChunk, parsed_id)
         if chunk is None:
+            logger.info("tool_get_listing_details_missing", chunk_id=chunk_id)
             return {"error": "chunk not found", "chunk_id": chunk_id}
 
+        logger.info("tool_get_listing_details_hit", chunk_id=chunk_id)
         return {
             "chunk_id": str(chunk.id),
             "message_start": chunk.message_start.isoformat() if chunk.message_start else None,
@@ -217,6 +232,7 @@ async def summarize_listings(docs: list[Document]) -> str:
 
     candidates = _coerce_docs(docs)
     if not candidates:
+        logger.info("tool_summarize_listings_empty")
         return "No listings are available to summarize."
 
     locations = Counter(str(doc.metadata.get("location", "Unknown")) for doc in candidates)
@@ -242,6 +258,7 @@ async def compare_listings(listing_ids: list[str]) -> str:
     ids = {str(item) for item in listing_ids}
     matched = [doc for doc in docs if extract_chunk_id(doc) in ids]
     if not matched:
+        logger.info("tool_compare_listings_no_match", requested_ids=list(ids), available_count=len(docs))
         return "No matching listing IDs were found in the active results."
 
     lines: list[str] = []
@@ -251,6 +268,7 @@ async def compare_listings(listing_ids: list[str]) -> str:
         lines.append(
             f"{cid}: {metadata.get('bhk', 'N/A')} | {metadata.get('location', 'N/A')} | {metadata.get('price', 'N/A')}"
         )
+    logger.info("tool_compare_listings_complete", requested_ids=list(ids), matched_count=len(matched))
     return " ; ".join(lines)
 
 

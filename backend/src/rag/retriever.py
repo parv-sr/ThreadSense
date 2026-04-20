@@ -70,7 +70,12 @@ class HybridQdrantRetriever:
                 )
             )
 
-        return Filter(must=must) if must else None
+        built_filter: Filter | None = Filter(must=must) if must else None
+        serialized_filter: dict[str, Any] | None = (
+            built_filter.model_dump(mode="json", exclude_none=True) if built_filter is not None else None
+        )
+        logger.debug("hybrid_filter_built", filters=filters, qdrant_filter=serialized_filter)
+        return built_filter
 
     async def retrieve(
         self,
@@ -91,6 +96,9 @@ class HybridQdrantRetriever:
         )
         parsed_filter: Filter | None = self._build_filter(merged_filters or None)
         q_filter: Filter | None = self._merge_filters(parsed_filter, qdrant_filter)
+        serialized_q_filter: dict[str, Any] | None = (
+            q_filter.model_dump(mode="json", exclude_none=True) if q_filter is not None else None
+        )
         normalized_query: str = constraints.normalized_query if constraints is not None else query
         parsed_constraints: dict[str, Any] | None = constraints.filters if constraints is not None else None
         logger.info(
@@ -99,6 +107,7 @@ class HybridQdrantRetriever:
             normalized_query=normalized_query,
             parsed_filters=parsed_constraints,
             filters=merged_filters or None,
+            merged_qdrant_filter=serialized_q_filter,
             limit=limit,
         )
 
@@ -114,7 +123,13 @@ class HybridQdrantRetriever:
             top_k=limit,
         )
 
-        logger.info("hybrid_retrieval_done", count=len(reranked_docs), candidate_count=len(docs))
+        first_candidate_metadata: dict[str, Any] | None = dict(docs[0].metadata or {}) if docs else None
+        logger.info(
+            "hybrid_retrieval_done",
+            count=len(reranked_docs),
+            candidate_count=len(docs),
+            first_candidate_metadata=first_candidate_metadata,
+        )
         return reranked_docs
 
 
@@ -183,4 +198,9 @@ class HybridQdrantRetriever:
             weighted.append((final_score, doc))
 
         weighted.sort(key=lambda item: item[0], reverse=True)
+        top_ids: list[str] = [
+            str((doc.metadata or {}).get("listing_id") or (doc.metadata or {}).get("chunk_id") or "")
+            for _, doc in weighted[:top_k]
+        ]
+        logger.debug("hybrid_lexical_rerank_complete", tokens=tokens, top_k=top_k, top_listing_ids=top_ids)
         return [doc for _, doc in weighted[:top_k]]

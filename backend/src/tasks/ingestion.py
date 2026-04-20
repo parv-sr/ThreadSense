@@ -95,6 +95,7 @@ async def _existing_hashes_stmt(owner_id: uuid.UUID | None) -> Select[tuple[str,
 async def ingest_raw_file_task(rawfile_id: str) -> dict[str, Any]:
     stats = DedupeStats()
     started_at = datetime.now(timezone.utc)
+    log.info("ingestion_task_started", rawfile_id=rawfile_id, started_at=started_at.isoformat())
 
     try:
         parsed_rawfile_id = uuid.UUID(rawfile_id)
@@ -105,11 +106,13 @@ async def ingest_raw_file_task(rawfile_id: str) -> dict[str, Any]:
         rawfile = await session.get(RawFile, parsed_rawfile_id)
         if rawfile is None:
             return {"status": "FAILED", "error": "RawFile not found", "stats": asdict(stats)}
+        log.info("ingestion_rawfile_loaded", rawfile_id=str(rawfile.id), filename=rawfile.file_name)
 
         try:
             rawfile.status = RawFileStatus.PROCESSING
             rawfile.process_started_at = started_at
             await session.commit()
+            log.info("ingestion_rawfile_marked_processing", rawfile_id=str(rawfile.id))
 
             content = rawfile.content or ""
             if not content.strip() and rawfile.file:
@@ -128,6 +131,7 @@ async def ingest_raw_file_task(rawfile_id: str) -> dict[str, Any]:
                 rawfile.notes = "No valid messages."
                 rawfile.dedupe_stats = asdict(stats)
                 await session.commit()
+                log.info("ingestion_empty_upload_completed", rawfile_id=str(rawfile.id))
                 return {"status": "COMPLETED", "rawfile_id": rawfile_id, "stats": asdict(stats)}
 
             try:
@@ -164,6 +168,7 @@ async def ingest_raw_file_task(rawfile_id: str) -> dict[str, Any]:
                 raise IngestionError(f"Rust parser failed: {exc}") from exc
 
             stats.total_messages = len(parsed_rows)
+            log.info("ingestion_parsed_rows", rawfile_id=str(rawfile.id), total_messages=stats.total_messages)
 
             # 1) in-chat dedupe and parser/system filtering
             local_seen: set[str] = set()
@@ -224,12 +229,21 @@ async def ingest_raw_file_task(rawfile_id: str) -> dict[str, Any]:
                     continue
                 batch_seen.add(item["dedupe_hash"])
                 stage_two.append(item)
+            log.info(
+                "ingestion_stage_dedupe_summary",
+                rawfile_id=str(rawfile.id),
+                stage_one_count=len(stage_one),
+                stage_two_count=len(stage_two),
+                local_duplicates=stats.local_duplicates,
+                batch_duplicates=stats.batch_duplicates,
+            )
 
             # 3) in-db dedupe
             existing_hashes: set[str] = set()
             stmt = await _existing_hashes_stmt(rawfile.owner_id)
             for cleaned_text, sender in (await session.execute(stmt)).all():
                 existing_hashes.add(_normalize_for_hash(cleaned_text or "", sender))
+            log.info("ingestion_db_hashes_loaded", rawfile_id=str(rawfile.id), existing_hash_count=len(existing_hashes))
 
             final_rows: list[RawMessageChunk] = []
             for item in stage_two:
@@ -264,6 +278,13 @@ async def ingest_raw_file_task(rawfile_id: str) -> dict[str, Any]:
             stats.created_chunks = len(final_rows)
             stats.final_unique_chunks = len(final_rows)
             stats.finalize()
+            log.info(
+                "ingestion_final_rows_prepared",
+                rawfile_id=str(rawfile.id),
+                created_chunks=stats.created_chunks,
+                db_duplicates=stats.db_duplicates,
+                duplicates_removed=stats.duplicates_removed,
+            )
 
             rawfile.status = RawFileStatus.COMPLETED
             rawfile.processed = True

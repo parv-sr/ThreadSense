@@ -27,10 +27,12 @@ async def ingest_file(
 ) -> dict[str, str]:
     filename = file.filename or "upload.txt"
     suffix = Path(filename).suffix.lower()
+    log.info("ingest_request_received", filename=filename, suffix=suffix)
     if suffix not in {".txt", ".zip", ".rar"}:
         raise HTTPException(status_code=400, detail="Only .txt, .zip, .rar files are supported")
 
     payload = await file.read()
+    log.info("ingest_payload_loaded", filename=filename, payload_bytes=len(payload))
     if not payload:
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
     if len(payload) > settings.ingest_max_bytes:
@@ -48,6 +50,7 @@ async def ingest_file(
     )
     existing_id = duplicate_q.scalar_one_or_none()
     if existing_id:
+        log.info("ingest_duplicate_detected", filename=filename, existing_rawfile_id=str(existing_id))
         return {"task_id": "", "rawfile_id": str(existing_id), "status": "ALREADY_EXISTS"}
 
     UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
@@ -71,6 +74,7 @@ async def ingest_file(
     session.add(rawfile)
     await session.commit()
     await session.refresh(rawfile)
+    log.info("ingest_rawfile_created", rawfile_id=str(rawfile.id), stored_path=str(stored_path))
 
     task = await ingest_raw_file_task.kiq(str(rawfile.id))
     rawfile.notes = f"{rawfile.notes or ''}; task_id={task.task_id}".strip("; ")
@@ -82,11 +86,13 @@ async def ingest_file(
 
 @router.get("/status/{task_id}")
 async def ingest_status(task_id: str, session: AsyncSession = Depends(get_db_session)) -> dict[str, object]:
+    log.debug("ingest_status_requested", task_id=task_id)
     row = await session.execute(
         select(RawFile).where(RawFile.notes.like(f"%task_id={task_id}%")).order_by(RawFile.uploaded_at.desc())
     )
     rawfile: RawFile | None = row.scalars().first()
     if rawfile is None:
+        log.info("ingest_status_pending", task_id=task_id)
         return {"task_id": task_id, "status": "PENDING", "result": None}
 
     status_map: dict[str, str] = {
@@ -110,4 +116,5 @@ async def ingest_status(task_id: str, session: AsyncSession = Depends(get_db_ses
     }
     if normalized_status == "FAILED":
         payload["error"] = rawfile.notes or "Ingestion failed."
+    log.info("ingest_status_resolved", task_id=task_id, status=normalized_status, rawfile_id=str(rawfile.id))
     return payload

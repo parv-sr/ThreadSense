@@ -51,12 +51,24 @@ class PreprocessingPipeline:
         batch_size: int = max(1, settings.llm_batch_size)
         for start_index in range(0, len(raw_chunks), batch_size):
             batch_chunks: Sequence[RawMessageChunk] = raw_chunks[start_index : start_index + batch_size]
+            logger.info(
+                "preprocess_batch_window_start",
+                start_index=start_index,
+                batch_count=len(batch_chunks),
+                batch_size=batch_size,
+            )
             extractor_inputs: list[tuple[UUID, str]] = [
                 (chunk.id, chunk.cleaned_text or chunk.raw_text)
                 for chunk in batch_chunks
             ]
 
             extracted_rows, raw_outputs = await self.extractor.aextract_batch(extractor_inputs)
+            logger.info(
+                "preprocess_batch_extraction_complete",
+                start_index=start_index,
+                extracted_rows=len(extracted_rows),
+                raw_outputs=len(raw_outputs),
+            )
             result_by_id: dict[UUID, ListingExtractionResult | None] = {
                 chunk_id: result for chunk_id, result in extracted_rows
             }
@@ -121,6 +133,11 @@ class PreprocessingPipeline:
 
                         # Atomic embedding+upsert in the same task/session for this listing.
                         await self.embedding_service.embed_and_upsert_listing(listing=listing, session=session)
+                        logger.debug(
+                            "preprocess_chunk_embedded",
+                            chunk_id=str(chunk.id),
+                            listing_id=str(listing.id),
+                        )
 
                         extracted_count += 1
 
@@ -137,6 +154,7 @@ class PreprocessingPipeline:
 
         # Final commit only includes successful savepoints.
         await session.commit()
+        logger.info("preprocess_batch_complete", extracted_count=extracted_count, failed_count=failed_count)
         return extracted_count, failed_count
 
 
@@ -146,4 +164,6 @@ async def load_new_chunks_for_rawfile(session: AsyncSession, rawfile_id: UUID) -
         RawMessageChunk.status == RawMessageChunkStatus.NEW,
     )
     result = await session.execute(stmt)
-    return list(result.scalars().all())
+    chunks: list[RawMessageChunk] = list(result.scalars().all())
+    logger.info("preprocess_new_chunks_loaded", rawfile_id=str(rawfile_id), chunk_count=len(chunks))
+    return chunks
