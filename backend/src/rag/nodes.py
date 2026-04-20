@@ -18,6 +18,7 @@ from backend.src.schemas.rag import (
     GradedListing,
     GradingResponse,
     ParsedQuery,
+    ParsedQueryLLMOutput,
 )
 
 logger = structlog.get_logger(__name__)
@@ -33,8 +34,8 @@ async def query_parser_node(state: dict[str, Any]) -> dict[str, Any]:
     """Parse the user query into explicit hard constraints plus soft preferences."""
 
     query_text: str = str(state.get("query") or "")
-    parser: Any = _parser_llm.with_structured_output(ParsedQuery)
-    parsed_query: ParsedQuery = await parser.ainvoke(
+    parser: Any = _parser_llm.with_structured_output(ParsedQueryLLMOutput)
+    llm_output: ParsedQuery = await parser.ainvoke(
         [
             SystemMessage(
                 content=(
@@ -47,6 +48,9 @@ async def query_parser_node(state: dict[str, Any]) -> dict[str, Any]:
             HumanMessage(content=query_text),
         ]
     )
+    parsed_query = ParsedQuery(**llm_output.model_dump())
+
+
     logger.info("rag_query_parsed", parsed_query=parsed_query.model_dump())
     return {"parsed_query": parsed_query}
 

@@ -5,7 +5,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
-class ParsedQuery(BaseModel):
+class ParsedQueryLLMOutput(BaseModel):
     """Structured parse of user intent into hard filters + soft preferences for deterministic retrieval."""
 
     price_min: int | None = Field(default=None, ge=0)
@@ -28,9 +28,12 @@ class ParsedQuery(BaseModel):
         description="OFFER (available listing) or REQUEST (buyer/tenant seeking)",
     )
     parkings_required: int | None = Field(default=None, ge=0)
-    hard_filters: dict[str, Any] = Field(default_factory=dict)
     soft_preferences: str = Field(default="")
 
+class ParsedQuery(ParsedQueryLLMOutput):
+    """Internal structured representation including dynamically built hard filters."""
+
+    hard_filters: dict[str, Any] = Field(default_factory=dict, json_schema_extra={"additionalProperties": False})
 
 class GradedListing(BaseModel):
     """Fast LLM grading over retrieved candidates after hard-filtered hybrid retrieval."""

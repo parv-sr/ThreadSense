@@ -28,7 +28,7 @@ class HybridQdrantRetriever:
         must: list[FieldCondition] = []
 
         if bhk := filters.get("bhk"):
-            must.append(FieldCondition(key="bhk", match=MatchValue(value=float(bhk))))
+            must.append(FieldCondition(key="bhk", range=Range(gte=float(bhk), lte=float(bhk))))
         if location := filters.get("location"):
             must.append(FieldCondition(key="location", match=MatchText(text=str(location))))
         if sender := filters.get("sender"):
