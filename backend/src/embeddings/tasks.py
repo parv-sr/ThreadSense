@@ -15,6 +15,7 @@ log = structlog.get_logger(__name__)
 
 @broker.task
 async def embed_property_listing_task(listing_id: str) -> dict[str, str]:
+    log.info("embed_listing_task_started", listing_id=listing_id)
     try:
         parsed_id = UUID(listing_id)
     except ValueError as exc:
@@ -29,6 +30,7 @@ async def embed_property_listing_task(listing_id: str) -> dict[str, str]:
         chunks = list((await session.execute(stmt)).scalars().all())
         if not chunks:
             return {"status": "FAILED", "error": "No listing chunks to embed"}
+        log.info("embed_listing_chunks_loaded", listing_id=listing_id, chunk_count=len(chunks))
 
         service = EmbeddingService()
         try:
@@ -44,10 +46,19 @@ async def embed_property_listing_task(listing_id: str) -> dict[str, str]:
                 )
                 chunk.qdrant_point_id = point_id
                 session.add(chunk)
+                log.debug(
+                    "embed_listing_chunk_upserted",
+                    listing_id=listing_id,
+                    chunk_id=str(chunk.id),
+                    point_id=point_id,
+                    vector_size=len(vector),
+                )
 
             await session.commit()
+            log.info("embed_listing_commit_complete", listing_id=listing_id, chunk_count=len(chunks))
         finally:
             await service.close()
+            log.info("embed_listing_service_closed", listing_id=listing_id)
 
     log.info("embed_listing_done", listing_id=listing_id, chunk_count=len(chunks))
     return {"status": "COMPLETED", "listing_id": listing_id}

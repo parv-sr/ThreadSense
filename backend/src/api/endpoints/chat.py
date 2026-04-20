@@ -61,6 +61,12 @@ async def chat(payload: ChatRequest, request: Request) -> ChatResponse:
     retriever: HybridQdrantRetriever = get_retriever(request)
     resolved_thread_id: str = payload.thread_id or str(uuid4())
     start_time: float = perf_counter()
+    logger.info(
+        "chat_pipeline_start",
+        thread_id=resolved_thread_id,
+        has_existing_thread_id=payload.thread_id is not None,
+        query_length=len(payload.message),
+    )
 
     set_retriever_context(retriever)
     logger.info("chat_request_received", thread_id=resolved_thread_id)
@@ -72,12 +78,21 @@ async def chat(payload: ChatRequest, request: Request) -> ChatResponse:
         final_answer: object | None = result.get("final_answer")
         if final_answer is None:
             raise RuntimeError("RAG graph completed without final_answer")
+        duration_ms: int = int((perf_counter() - start_time) * 1000)
+        sources: list[str] = list(getattr(final_answer, "sources", []))
+        logger.info(
+            "chat_pipeline_complete",
+            thread_id=resolved_thread_id,
+            duration_ms=duration_ms,
+            sources_count=len(sources),
+            table_html_length=len(str(getattr(final_answer, "table_html", ""))),
+        )
 
         return ChatResponse(
             thread_id=resolved_thread_id,
             table_html=str(getattr(final_answer, "table_html", "")),
             reasoning=str(getattr(final_answer, "answer", "")),
-            sources=list(getattr(final_answer, "sources", [])),
+            sources=sources,
         )
     except Exception as exc:  # noqa: BLE001
         duration_ms: int = int((perf_counter() - start_time) * 1000)
@@ -108,7 +123,9 @@ async def view_source(chunk_id: str, session: AsyncSession = Depends(get_db_sess
 
     chunk: RawMessageChunk | None = await session.get(RawMessageChunk, parsed_id)
     if chunk is None:
+        logger.info("chat_source_not_found", chunk_id=chunk_id)
         raise HTTPException(status_code=404, detail="Source chunk not found")
+    logger.info("chat_source_resolved", chunk_id=chunk_id, sender=chunk.sender)
 
     return SourceResponse(
         chunk_id=str(chunk.id),

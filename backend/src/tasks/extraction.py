@@ -146,6 +146,7 @@ def _build_qdrant_client() -> AsyncQdrantClient:
 async def _ensure_collection(client: AsyncQdrantClient, collection: str) -> None:
     """Create the Qdrant collection if it does not exist yet."""
     existing = {c.name for c in (await client.get_collections()).collections}
+    log.info("extract_qdrant_collection_check", collection=collection, exists=collection in existing)
     if collection in existing:
         info = await client.get_collection(collection)
         vectors_cfg = getattr(info.config.params, "vectors", None)
@@ -172,6 +173,7 @@ async def _extract_single_chunk(
     """Run structured extraction on one chunk; returns None on failure."""
     text = chunk.cleaned_text or chunk.raw_text
     if not text or not text.strip():
+        log.debug("extract_chunk_skipped_empty", chunk_id=str(chunk.id))
         return None
     try:
         result: ExtractedListing = await llm_structured.ainvoke(
@@ -195,6 +197,7 @@ async def _process_batch(
     session: AsyncSession,
 ) -> int:
     """Extract, embed, upsert and mark a single batch. Returns number of successes."""
+    log.info("extract_batch_start", batch_size=len(batch))
 
     # 1. Concurrent structured extraction
     extraction_tasks = [_extract_single_chunk(llm_structured, chunk) for chunk in batch]
@@ -206,6 +209,7 @@ async def _process_batch(
         for chunk, listing in zip(batch, extracted)
         if listing is not None
     ]
+    log.info("extract_batch_extraction_result", batch_size=len(batch), valid_pairs=len(valid_pairs))
     if not valid_pairs:
         log.warning("batch_no_valid_extractions", batch_size=len(batch))
         return 0
@@ -221,6 +225,7 @@ async def _process_batch(
     except Exception as exc:
         log.error("batch_embedding_failed", error=str(exc))
         return 0
+    log.info("extract_batch_embeddings_ready", vector_count=len(vectors))
 
     # 4. Build Qdrant points
     points: List[qmodels.PointStruct] = []
@@ -242,6 +247,7 @@ async def _process_batch(
                 payload=payload,
             )
         )
+    log.info("extract_batch_points_built", points_count=len(points))
 
     # 5. Upsert into Qdrant
     try:
@@ -259,6 +265,7 @@ async def _process_batch(
         succeeded += 1
 
     await session.commit()
+    log.info("extract_batch_commit_complete", succeeded=succeeded)
     return succeeded
 
 
@@ -291,6 +298,7 @@ async def extract_and_embed_task(rawfile_id: str) -> dict[str, Any]:
     )
 
     qdrant_client = _build_qdrant_client()
+    log.info("extract_clients_ready", rawfile_id=rawfile_id, batch_size=BATCH_SIZE)
 
     total_processed = 0
     total_failed = 0

@@ -62,10 +62,12 @@ class EmbeddingService:
 
     async def ensure_collection(self) -> None:
         if self._collection_ready:
+            log.debug("qdrant_collection_already_ready", collection=QDRANT_COLLECTION)
             return
 
         collections = await self.qdrant.get_collections()
         existing: set[str] = {c.name for c in collections.collections}
+        log.info("qdrant_collection_check", collection=QDRANT_COLLECTION, exists=QDRANT_COLLECTION in existing)
         if QDRANT_COLLECTION in existing:
             info = await self.qdrant.get_collection(QDRANT_COLLECTION)
             vectors_cfg: Any = getattr(info.config.params, "vectors", None)
@@ -104,6 +106,7 @@ class EmbeddingService:
             QDRANT_COLLECTION, "chunk_id", field_schema=qmodels.PayloadSchemaType.KEYWORD
         )
         self._collection_ready = True
+        log.info("qdrant_collection_ready", collection=QDRANT_COLLECTION)
 
     @retry(
         stop=stop_after_attempt(3),
@@ -172,12 +175,14 @@ class EmbeddingService:
         )
 
     async def embed_and_upsert_listing(self, *, listing: PropertyListing, session: AsyncSession) -> None:
+        log.info("embedding_listing_start", listing_id=str(listing.id), raw_chunk_id=str(listing.raw_chunk_id))
         await self.ensure_collection()
 
         stmt = select(ListingChunk).where(ListingChunk.listing_id == listing.id).order_by(ListingChunk.chunk_index)
         chunks: list[ListingChunk] = list((await session.execute(stmt)).scalars().all())
         if not chunks:
             raise ValueError(f"No listing chunks to embed for listing_id={listing.id}")
+        log.info("embedding_listing_chunks_loaded", listing_id=str(listing.id), chunk_count=len(chunks))
 
         for chunk in chunks:
             try:
@@ -223,6 +228,14 @@ class EmbeddingService:
             )
             chunk.qdrant_point_id = point_id
             session.add(chunk)
+            log.debug(
+                "embedding_chunk_upserted",
+                listing_id=str(listing.id),
+                chunk_id=str(chunk.id),
+                point_id=point_id,
+                vector_size=len(vector),
+            )
+        log.info("embedding_listing_complete", listing_id=str(listing.id), chunk_count=len(chunks))
 
     async def truncate_all_points(self) -> None:
         log.warning("qdrant_truncate_started", collection=QDRANT_COLLECTION)

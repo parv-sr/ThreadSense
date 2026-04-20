@@ -21,6 +21,7 @@ log = structlog.get_logger(__name__)
     max_delay_exponent=120,
 )
 async def preprocess_rawfile_task(rawfile_id: str) -> dict[str, int | str]:
+    log.info("preprocess_task_started", rawfile_id=rawfile_id)
     try:
         parsed_id: UUID = UUID(rawfile_id)
     except ValueError as exc:
@@ -39,6 +40,7 @@ async def preprocess_rawfile_task(rawfile_id: str) -> dict[str, int | str]:
         rawfile.status = RawFileStatus.PROCESSING
         rawfile.process_started_at = rawfile.process_started_at or datetime.now(timezone.utc)
         await session.commit()
+        log.info("preprocess_rawfile_marked_processing", rawfile_id=rawfile_id)
 
     pipeline: PreprocessingPipeline = PreprocessingPipeline()
 
@@ -47,6 +49,7 @@ async def preprocess_rawfile_task(rawfile_id: str) -> dict[str, int | str]:
             chunks = await load_new_chunks_for_rawfile(session, parsed_id)
             if not chunks:
                 outcome_status = RawFileStatus.COMPLETED
+                log.info("preprocess_no_new_chunks", rawfile_id=rawfile_id)
                 return {
                     "status": "COMPLETED",
                     "rawfile_id": rawfile_id,
@@ -78,6 +81,7 @@ async def preprocess_rawfile_task(rawfile_id: str) -> dict[str, int | str]:
 
     finally:
         await pipeline.embedding_service.close()
+        log.info("preprocess_embedding_service_closed", rawfile_id=rawfile_id)
         # Safety net for worker interruptions/retries: reset lingering PROCESSING rows.
         async with AsyncSessionLocal() as cleanup_session:
             cleanup_rawfile: RawFile | None = await cleanup_session.get(RawFile, parsed_id)
@@ -88,3 +92,9 @@ async def preprocess_rawfile_task(rawfile_id: str) -> dict[str, int | str]:
                 if task_error is not None and outcome_status != RawFileStatus.COMPLETED:
                     cleanup_rawfile.notes = f"Preprocessing retry scheduled: {task_error}"
                 await cleanup_session.commit()
+                log.info(
+                    "preprocess_cleanup_status_applied",
+                    rawfile_id=rawfile_id,
+                    outcome_status=str(outcome_status),
+                    has_error=task_error is not None,
+                )

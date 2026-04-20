@@ -48,6 +48,18 @@ _graph_builder.add_edge("filter_builder", "retrieval")
 _graph_builder.add_edge("retrieval", "grader")
 _graph_builder.add_edge("grader", "final_answer")
 _graph_builder.add_edge("final_answer", END)
+logger.info(
+    "rag_graph_compiled_structure",
+    nodes=["parser", "filter_builder", "retrieval", "grader", "final_answer"],
+    edges=[
+        "START->parser",
+        "parser->filter_builder",
+        "filter_builder->retrieval",
+        "retrieval->grader",
+        "grader->final_answer",
+        "final_answer->END",
+    ],
+)
 
 # Redis checkpointer persists thread state across worker processes.
 _checkpointer: AsyncRedisSaver | None
@@ -59,3 +71,4 @@ except Exception as exc:  # noqa: BLE001
     _checkpointer = None
 
 rag_app = _graph_builder.compile(checkpointer=_checkpointer)
+logger.info("rag_graph_ready", checkpointer_enabled=_checkpointer is not None)

@@ -34,6 +34,7 @@ async def query_parser_node(state: dict[str, Any]) -> dict[str, Any]:
     """Parse the user query into explicit hard constraints plus soft preferences."""
 
     query_text: str = str(state.get("query") or "")
+    logger.info("rag_query_parser_start", query_length=len(query_text))
     parser: Any = _parser_llm.with_structured_output(ParsedQueryLLMOutput)
     llm_output: ParsedQuery = await parser.ainvoke(
         [
@@ -60,6 +61,7 @@ async def build_hard_filter_node(state: dict[str, Any]) -> dict[str, Any]:
 
     parsed_query: ParsedQuery | None = state.get("parsed_query")
     must_conditions: list[FieldCondition] = []
+    logger.info("rag_hard_filter_start", has_parsed_query=parsed_query is not None)
 
     if parsed_query is None:
         return {"qdrant_filter": None}
@@ -110,6 +112,9 @@ async def build_hard_filter_node(state: dict[str, Any]) -> dict[str, Any]:
         )
 
     qdrant_filter: Filter | None = Filter(must=must_conditions) if must_conditions else None
+    serialized_qdrant_filter: dict[str, Any] | None = (
+        qdrant_filter.model_dump(mode="json", exclude_none=True) if qdrant_filter is not None else None
+    )
 
     hard_filters: dict[str, Any] = {
         "price_min": parsed_query.price_min,
@@ -127,6 +132,7 @@ async def build_hard_filter_node(state: dict[str, Any]) -> dict[str, Any]:
     resolved_hard_filters: dict[str, Any] = {k: v for k, v in hard_filters.items() if v is not None}
     updated_query: ParsedQuery = parsed_query.model_copy(update={"hard_filters": resolved_hard_filters})
     logger.info("rag_hard_filter_built", hard_filters=resolved_hard_filters)
+    logger.info("rag_qdrant_filter_serialized", qdrant_filter=serialized_qdrant_filter)
     return {"qdrant_filter": qdrant_filter, "parsed_query": updated_query}
 
 
@@ -136,6 +142,12 @@ async def hybrid_retrieval_node(state: dict[str, Any]) -> dict[str, Any]:
     query_text: str = str(state.get("query") or "")
     qdrant_filter: Filter | None = state.get("qdrant_filter")
     parsed_query: ParsedQuery | None = state.get("parsed_query")
+    logger.info(
+        "rag_hybrid_retrieval_start",
+        query_length=len(query_text),
+        has_qdrant_filter=qdrant_filter is not None,
+        has_parsed_query=parsed_query is not None,
+    )
     explicit_filters: dict[str, Any] = (
         {
             k: v
@@ -161,6 +173,10 @@ async def hybrid_retrieval_node(state: dict[str, Any]) -> dict[str, Any]:
             "qdrant_filter": qdrant_filter,
         }
     )
+    logger.info("rag_retrieval_complete", retrieved_count=len(docs))
+    if docs:
+        first_doc_metadata: dict[str, Any] = dict(docs[0].metadata or {})
+        logger.info("rag_retrieval_first_doc_metadata", metadata=first_doc_metadata)
     return {"retrieved_listings": docs}
 
 
@@ -170,6 +186,11 @@ async def rerank_grader_node(state: dict[str, Any]) -> dict[str, Any]:
     docs: list[Document] = list(state.get("retrieved_listings") or [])
     parsed_query: ParsedQuery | None = state.get("parsed_query")
     soft_preferences: str = parsed_query.soft_preferences if parsed_query is not None else ""
+    logger.info(
+        "rag_grader_start",
+        retrieved_count=len(docs),
+        soft_preferences_present=bool(soft_preferences),
+    )
 
     evidence: list[dict[str, Any]] = []
     for doc in docs:
@@ -204,6 +225,16 @@ async def rerank_grader_node(state: dict[str, Any]) -> dict[str, Any]:
         ]
     )
     graded_listings: list[GradedListing] = response.results
+    valid_count: int = sum(1 for listing in graded_listings if listing.is_valid)
+    invalid_count: int = sum(1 for listing in graded_listings if not listing.is_valid)
+    logger.info("rag_grading_summary", valid_count=valid_count, invalid_count=invalid_count)
+    invalid_listings: list[GradedListing] = [listing for listing in graded_listings if not listing.is_valid]
+    for invalid_listing in invalid_listings[:2]:
+        logger.info(
+            "rag_rejection_reason",
+            listing_id=invalid_listing.listing_id,
+            reason=invalid_listing.reason,
+        )
     logger.info("rag_listings_graded", graded_count=len(graded_listings))
     return {"graded_listings": graded_listings}
 
@@ -214,6 +245,12 @@ async def final_answer_node(state: dict[str, Any]) -> dict[str, Any]:
     docs: list[Document] = list(state.get("retrieved_listings") or [])
     graded_listings: list[GradedListing] = list(state.get("graded_listings") or [])
     query_text: str = str(state.get("query") or "")
+    logger.info(
+        "rag_final_answer_start",
+        retrieved_count=len(docs),
+        graded_count=len(graded_listings),
+        query_length=len(query_text),
+    )
 
     doc_map: dict[str, Document] = {}
     for doc in docs:
@@ -257,6 +294,7 @@ async def final_answer_node(state: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
+    logger.info("rag_final_selection_count", selected_count=len(selected))
     answer_builder: Any = _final_llm.with_structured_output(FinalAnswerLLMOutput)
     llm_answer: FinalAnswerLLMOutput = await answer_builder.ainvoke(
         [
@@ -293,6 +331,12 @@ async def final_answer_node(state: dict[str, Any]) -> dict[str, Any]:
         )
 
     table_html: str = render_table_html(table_rows)
+    logger.info(
+        "rag_final_answer_complete",
+        selected_count=len(selected),
+        source_count=len(llm_answer.sources),
+        confidence=llm_answer.confidence,
+    )
     return {
         "final_answer": AnswerWithSources(
             answer=llm_answer.answer,
