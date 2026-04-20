@@ -14,6 +14,14 @@ from backend.src.core.config import get_settings
 from backend.src.models.ingestion import RawFile, RawFileStatus
 from backend.src.tasks.ingestion import ingest_raw_file_task
 
+def _sanitise_content(text: str) -> str:
+    """Remove null bytes (\x00) that PostgreSQL refuses in TEXT/VARCHAR columns.
+    We already use errors='replace' on decode, but some WhatsApp exports
+    (especially testdata2.txt) still contain literal \x00."""
+    if not text:
+        return ""
+    return text.replace("\x00", "")
+
 router = APIRouter(prefix="/ingest", tags=["ingestion"])
 log = structlog.get_logger(__name__)
 settings = get_settings()
@@ -59,7 +67,9 @@ async def ingest_file(
 
     content = ""
     if suffix == ".txt":
-        content = payload.decode("utf-8", errors="replace")
+        content: str = _sanitise_content(
+            payload.decode("utf-8", errors="replace")
+        )
 
     rawfile = RawFile(
         file=str(stored_path),
