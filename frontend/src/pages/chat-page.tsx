@@ -42,7 +42,16 @@ export const ChatPage = () => {
         },
       ])
     } catch {
-      toast.error('Could not get response from backend.')
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: crypto.randomUUID(),
+          type: 'assistant',
+          tableHtml: '',
+          reasoning: 'Sorry, I encountered an issue. Please try again.',
+          sources: [],
+        },
+      ])
     }
   }
 

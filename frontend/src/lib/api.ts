@@ -1,19 +1,33 @@
 import axios from 'axios'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { z } from 'zod'
 import { supabase } from './supabase'
+import { env } from './env'
 import { toast } from 'sonner'
-
-const API_BASE_URL = import.meta.env.VITE_API_URL ?? ''
+import type { 
+  ChatPayload, 
+  ChatResponse, 
+  IngestResponse, 
+  SourceChunk, 
+  TaskStatusResponse, 
+  UploadSummary, 
+  UploadDetail,
+  DedupeStats
+} from '../types/api'
 
 export const api = axios.create({
-  baseURL: API_BASE_URL,
+  baseURL: env.apiUrl,
   timeout: 30_000,
 })
 
 api.interceptors.request.use(async (config) => {
-  const { data: { session } } = await supabase.auth.getSession()
-  if (session?.access_token) {
+  const { data: { session }, error } = await supabase.auth.getSession()
+  if (error || !session) {
+    // Attempt refresh before giving up
+    const { data: refreshed } = await supabase.auth.refreshSession()
+    if (refreshed.session?.access_token) {
+      config.headers.Authorization = `Bearer ${refreshed.session.access_token}`
+    }
+  } else if (session?.access_token) {
     config.headers.Authorization = `Bearer ${session.access_token}`
   }
   return config
@@ -22,74 +36,16 @@ api.interceptors.request.use(async (config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    toast.error(error.response?.data?.message || 'An unexpected error occurred')
+    if (error.response?.status === 401) {
+      supabase.auth.signOut().then(() => {
+        window.location.href = '/settings'
+      })
+    } else {
+      toast.error(error.response?.data?.message || 'An unexpected error occurred')
+    }
     return Promise.reject(error)
   }
 )
-
-const chatResponseSchema = z.object({
-  table_html: z.string(),
-  reasoning: z.string(),
-  sources: z.array(z.string()),
-})
-
-export type ChatResponse = z.infer<typeof chatResponseSchema>
-
-export interface ChatPayload {
-  message: string
-  thread_id?: string
-}
-
-export interface IngestResponse {
-  task_id: string
-  rawfile_id: string
-  status: 'QUEUED' | 'ALREADY_EXISTS' | string
-}
-
-export interface SourceChunk {
-  chunk_id: string
-  message_start: string | null
-  sender: string | null
-  raw_text: string
-  cleaned_text: string | null
-  status: string
-  created_at: string | null
-}
-
-export interface TaskStatusResponse {
-  status: 'PENDING' | 'COMPLETED' | 'FAILED' | 'PROCESSING' | string
-  task_id: string
-  progress_percentage?: number
-  result?: Record<string, unknown>
-  error?: string
-}
-
-export interface UploadRecord {
-  id: string
-  name: string
-  status: string
-  uploadedAt: string
-  taskId: string
-  rawfileId: string
-  fileSize: number
-  dedupeStats?: DedupeStats
-}
-
-export interface DedupeStats {
-  total_messages: number
-  system_filtered: number
-  media_count: number
-  keyword_filtered: number
-  local_duplicates: number
-  batch_duplicates: number
-  db_duplicates: number
-  duplicates_removed: number
-  final_unique_chunks: number
-  created_chunks: number
-  ignored_chunks: number
-  parser_failures: number
-  notes: string[]
-}
 
 const DEDUPE_DEFAULTS: DedupeStats = {
   total_messages: 0,
@@ -129,18 +85,11 @@ export const parseDedupeStats = (value: unknown): DedupeStats => {
   }
 }
 
-export const createProcessingEventSource = (taskId: string): EventSource => {
-  const streamPath = import.meta.env.VITE_SSE_PATH ?? '/ingest/stream'
-  const normalized = streamPath.startsWith('/') ? streamPath : `/${streamPath}`
-  const url = `${API_BASE_URL}${normalized}/${taskId}`
-  return new EventSource(url)
-}
-
 export const useChatMutation = () =>
   useMutation({
     mutationFn: async (payload: ChatPayload) => {
-      const { data } = await api.post('/chat/', payload)
-      return chatResponseSchema.parse(data)
+      const { data } = await api.post<ChatResponse>('/chat/', payload)
+      return data
     },
   })
 
@@ -161,10 +110,35 @@ export const useTaskStatusQuery = (taskId?: string, enabled = true) =>
   useQuery({
     queryKey: ['task-status', taskId],
     enabled: Boolean(taskId) && enabled,
-    refetchInterval: 4_000,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status
+      if (status === 'COMPLETED' || status === 'FAILED') return false
+      return 4_000
+    },
+    refetchIntervalInBackground: false,
     queryFn: async () => {
       const { data } = await api.get<TaskStatusResponse>(`/ingest/status/${taskId}`)
       return data
+    },
+  })
+
+export const useUploadsQuery = () =>
+  useQuery({
+    queryKey: ['uploads'],
+    queryFn: async () => {
+      const { data } = await api.get('/ingest/uploads')
+      return data.uploads as UploadSummary[]
+    },
+    refetchInterval: 8_000,
+  })
+
+export const useUploadDetailQuery = (rawfileId: string | undefined) =>
+  useQuery({
+    queryKey: ['upload-detail', rawfileId],
+    enabled: Boolean(rawfileId),
+    queryFn: async () => {
+      const { data } = await api.get(`/ingest/uploads/${rawfileId}`)
+      return data as UploadDetail
     },
   })
 

@@ -1,33 +1,16 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { AlertTriangle, Loader2 } from 'lucide-react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
 import { Link } from 'react-router-dom'
 import { UploadDropzone } from '@/components/upload/upload-dropzone'
 import { Card } from '@/components/ui/card'
-import { useIngestMutation, type UploadRecord } from '@/lib/api'
-
-const STORAGE_KEY = 'threadsense.uploads'
+import { useIngestMutation, useUploadsQuery } from '@/lib/api'
 
 export const UploadsPage = () => {
   const ingestMutation = useIngestMutation()
-  const [uploads, setUploads] = useState<UploadRecord[]>([])
+  const { data: uploads = [] } = useUploadsQuery()
   const [uploadProgress, setUploadProgress] = useState<number | null>(null)
-
-  useEffect(() => {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return
-    try {
-      setUploads(JSON.parse(raw) as UploadRecord[])
-    } catch {
-      setUploads([])
-    }
-  }, [])
-
-  const persist = (items: UploadRecord[]) => {
-    setUploads(items)
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(items))
-  }
 
   const handleUpload = async (file: File) => {
     try {
@@ -41,19 +24,6 @@ export const UploadsPage = () => {
         },
       })
       setUploadProgress(null)
-      const next: UploadRecord[] = [
-        {
-          id: crypto.randomUUID(),
-          name: file.name,
-          status: result.status,
-          uploadedAt: new Date().toISOString(),
-          taskId: result.task_id,
-          rawfileId: result.rawfile_id,
-          fileSize: file.size,
-        },
-        ...uploads,
-      ]
-      persist(next)
       toast.success(result.status === 'ALREADY_EXISTS' ? 'Duplicate file detected.' : 'Upload queued successfully.')
     } catch {
       toast.error('Upload failed. Please try again.')
@@ -62,7 +32,7 @@ export const UploadsPage = () => {
 
   const totals = useMemo(
     () => ({
-      total: uploads.filter((u) => u.status === 'ALREADY_EXISTS').length,
+      total: uploads.length,
       uploaded: uploads.filter((u) => u.status !== 'ALREADY_EXISTS').length,
       duplicates: uploads.filter((u) => u.status === 'ALREADY_EXISTS').length,
     }),
@@ -134,7 +104,7 @@ export const UploadsPage = () => {
                 {uploads.map((event) => (
                   <tr key={event.id} className='border-b border-zinc-800/70'>
                     <td className='px-4 py-3 text-zinc-200'>{event.name}</td>
-                    <td className='font-mono-data px-4 py-3 text-zinc-400'>{format(new Date(event.uploadedAt), 'PPpp')}</td>
+                    <td className='font-mono-data px-4 py-3 text-zinc-400'>{format(new Date(event.uploaded_at), 'PPpp')}</td>
                     <td className='px-4 py-3'>
                       <span className='rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-300'>
                         {event.status}
@@ -142,8 +112,7 @@ export const UploadsPage = () => {
                     </td>
                     <td className='px-4 py-3'>
                       <Link
-                        to={`/uploads/${event.rawfileId}`}
-                        state={{ upload: event }}
+                        to={`/uploads/${event.rawfile_id}`}
                         className='inline-flex h-8 items-center justify-center rounded-md bg-cyan-400 px-3 text-xs font-semibold text-zinc-950 transition hover:bg-cyan-300'
                       >
                         View Details
