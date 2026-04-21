@@ -1,6 +1,8 @@
 import axios from 'axios'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { z } from 'zod'
+import { supabase } from './supabase'
+import { toast } from 'sonner'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL ?? ''
 
@@ -8,6 +10,22 @@ export const api = axios.create({
   baseURL: API_BASE_URL,
   timeout: 30_000,
 })
+
+api.interceptors.request.use(async (config) => {
+  const { data: { session } } = await supabase.auth.getSession()
+  if (session?.access_token) {
+    config.headers.Authorization = `Bearer ${session.access_token}`
+  }
+  return config
+})
+
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    toast.error(error.response?.data?.message || 'An unexpected error occurred')
+    return Promise.reject(error)
+  }
+)
 
 const chatResponseSchema = z.object({
   table_html: z.string(),
@@ -41,6 +59,7 @@ export interface SourceChunk {
 export interface TaskStatusResponse {
   status: 'PENDING' | 'COMPLETED' | 'FAILED' | 'PROCESSING' | string
   task_id: string
+  progress_percentage?: number
   result?: Record<string, unknown>
   error?: string
 }
@@ -127,11 +146,12 @@ export const useChatMutation = () =>
 
 export const useIngestMutation = () =>
   useMutation({
-    mutationFn: async (file: File) => {
+    mutationFn: async ({ file, onUploadProgress }: { file: File; onUploadProgress?: (progressEvent: any) => void }) => {
       const formData = new FormData()
       formData.append('file', file)
       const { data } = await api.post<IngestResponse>('/ingest/', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
+        onUploadProgress,
       })
       return data
     },

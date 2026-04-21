@@ -58,6 +58,7 @@ class RawFile(Base):
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
+    progress_percentage: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     raw_chunks: Mapped[list[RawMessageChunk]] = relationship(
         back_populates="rawfile",

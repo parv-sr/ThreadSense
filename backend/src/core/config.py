@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     qdrant_url: str | None = Field(default=None, alias="QDRANT_URL")
     qdrant_cluster_endpoint: str | None = Field(default=None, alias="QDRANT_CLUSTER_ENDPOINT")
     qdrant_api_key: str | None = Field(default=None, alias="QDRANT_API_KEY")
+    supabase_jwt_secret: str = Field(default="super-secret-jwt-token-with-at-least-32-characters-long", alias="SUPABASE_JWT_SECRET")
 
     @property
     def qdrant_endpoint(self) -> str:

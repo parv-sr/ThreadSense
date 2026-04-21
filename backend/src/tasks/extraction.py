@@ -222,6 +222,11 @@ async def _process_batch(
     ]
     try:
         vectors: List[List[float]] = await embeddings_model.aembed_documents(texts_to_embed)
+        # Update progress to 75% when embeddings generated
+        from sqlalchemy import update
+        from backend.src.models.ingestion import RawFile
+        await session.execute(update(RawFile).where(RawFile.id == batch[0].rawfile_id).values(progress_percentage=75))
+        await session.commit()
     except Exception as exc:
         log.error("batch_embedding_failed", error=str(exc))
         return 0
@@ -252,6 +257,11 @@ async def _process_batch(
     # 5. Upsert into Qdrant
     try:
         await qdrant_client.upsert(collection_name=QDRANT_COLLECTION, points=points)
+        # Update progress to 100% when upserted
+        from sqlalchemy import update
+        from backend.src.models.ingestion import RawFile
+        await session.execute(update(RawFile).where(RawFile.id == batch[0].rawfile_id).values(progress_percentage=100))
+        # Commit will happen below
         log.info("qdrant_upsert_ok", count=len(points))
     except Exception as exc:
         log.error("qdrant_upsert_failed", error=str(exc))
@@ -281,98 +291,113 @@ async def extract_and_embed_task(rawfile_id: str) -> dict[str, Any]:
     vectors + payloads into Qdrant.
     """
     import os
+    from sqlalchemy import update
+    from backend.src.models.ingestion import RawFile
 
     try:
-        parsed_id = UUID(rawfile_id)
-    except ValueError as exc:
-        return {"status": "FAILED", "error": f"Invalid rawfile_id: {exc}"}
-
-    log.info("extract_embed_start", rawfile_id=rawfile_id)
-
-    # --- Build LLM with structured output ---
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.0)
-    llm_structured = llm.with_structured_output(ExtractedListing)
-
-    embeddings_model = OpenAIEmbeddings(
-        model=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
-    )
-
-    qdrant_client = _build_qdrant_client()
-    log.info("extract_clients_ready", rawfile_id=rawfile_id, batch_size=BATCH_SIZE)
-
-    total_processed = 0
-    total_failed = 0
-
-    async with AsyncSessionLocal() as session:
-        # Fetch all NEW chunks for this rawfile
-        stmt = select(RawMessageChunk).where(
-            RawMessageChunk.rawfile_id == parsed_id,
-            RawMessageChunk.status == RawMessageChunkStatus.NEW,
-        )
-        result = await session.execute(stmt)
-        chunks: List[RawMessageChunk] = list(result.scalars().all())
-
-    if not chunks:
-        log.info("extract_embed_no_chunks", rawfile_id=rawfile_id)
-        return {"status": "COMPLETED", "rawfile_id": rawfile_id, "processed": 0}
-
-    log.info("extract_embed_chunks_found", rawfile_id=rawfile_id, count=len(chunks))
-
-    # Ensure Qdrant collection exists
-    try:
-        await _ensure_collection(qdrant_client, QDRANT_COLLECTION)
-    except Exception as exc:
-        log.error("qdrant_collection_check_failed", error=str(exc))
-        return {"status": "FAILED", "error": str(exc)}
-
-    # Process in batches of BATCH_SIZE
-    batches = [chunks[i : i + BATCH_SIZE] for i in range(0, len(chunks), BATCH_SIZE)]
-
-    for batch_idx, batch in enumerate(batches):
-        log.info(
-            "extract_embed_batch",
-            rawfile_id=rawfile_id,
-            batch=batch_idx + 1,
-            total_batches=len(batches),
-            size=len(batch),
-        )
         try:
-            async with AsyncSessionLocal() as session:
-                # Re-fetch live ORM objects inside this session
-                chunk_ids = [c.id for c in batch]
-                stmt = select(RawMessageChunk).where(RawMessageChunk.id.in_(chunk_ids))
-                res = await session.execute(stmt)
-                live_batch = list(res.scalars().all())
+            parsed_id = UUID(rawfile_id)
+        except ValueError as exc:
+            return {"status": "FAILED", "error": f"Invalid rawfile_id: {exc}"}
 
-                succeeded = await _process_batch(
-                    live_batch,
-                    llm_structured,
-                    embeddings_model,
-                    qdrant_client,
-                    session,
-                )
-                total_processed += succeeded
-                total_failed += len(batch) - succeeded
+        log.info("extract_embed_start", rawfile_id=rawfile_id)
+
+        # --- Build LLM with structured output ---
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.0)
+        llm_structured = llm.with_structured_output(ExtractedListing)
+
+        embeddings_model = OpenAIEmbeddings(
+            model=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+        )
+
+        qdrant_client = _build_qdrant_client()
+        log.info("extract_clients_ready", rawfile_id=rawfile_id, batch_size=BATCH_SIZE)
+
+        total_processed = 0
+        total_failed = 0
+
+        async with AsyncSessionLocal() as session:
+            # Fetch all NEW chunks for this rawfile
+            stmt = select(RawMessageChunk).where(
+                RawMessageChunk.rawfile_id == parsed_id,
+                RawMessageChunk.status == RawMessageChunkStatus.NEW,
+            )
+            result = await session.execute(stmt)
+            chunks: List[RawMessageChunk] = list(result.scalars().all())
+
+        if not chunks:
+            log.info("extract_embed_no_chunks", rawfile_id=rawfile_id)
+            return {"status": "COMPLETED", "rawfile_id": rawfile_id, "processed": 0}
+
+        log.info("extract_embed_chunks_found", rawfile_id=rawfile_id, count=len(chunks))
+
+        # Ensure Qdrant collection exists
+        try:
+            await _ensure_collection(qdrant_client, QDRANT_COLLECTION)
         except Exception as exc:
-            log.error(
-                "extract_embed_batch_error",
+            log.error("qdrant_collection_check_failed", error=str(exc))
+            return {"status": "FAILED", "error": str(exc)}
+
+        # Process in batches of BATCH_SIZE
+        batches = [chunks[i : i + BATCH_SIZE] for i in range(0, len(chunks), BATCH_SIZE)]
+
+        for batch_idx, batch in enumerate(batches):
+            log.info(
+                "extract_embed_batch",
                 rawfile_id=rawfile_id,
                 batch=batch_idx + 1,
-                error=str(exc),
+                total_batches=len(batches),
+                size=len(batch),
             )
-            total_failed += len(batch)
+            try:
+                async with AsyncSessionLocal() as session:
+                    # Re-fetch live ORM objects inside this session
+                    chunk_ids = [c.id for c in batch]
+                    stmt = select(RawMessageChunk).where(RawMessageChunk.id.in_(chunk_ids))
+                    res = await session.execute(stmt)
+                    live_batch = list(res.scalars().all())
 
-    await qdrant_client.close()
+                    succeeded = await _process_batch(
+                        live_batch,
+                        llm_structured,
+                        embeddings_model,
+                        qdrant_client,
+                        session,
+                    )
+                    total_processed += succeeded
+                    total_failed += len(batch) - succeeded
+            except Exception as exc:
+                log.error(
+                    "extract_embed_batch_error",
+                    rawfile_id=rawfile_id,
+                    batch=batch_idx + 1,
+                    error=str(exc),
+                )
+                total_failed += len(batch)
 
-    log.info(
-        "extract_embed_done",
-        rawfile_id=rawfile_id,
-        processed=total_processed,
-        failed=total_failed,
-    )
-    return {
-        "status": "COMPLETED",
-        "rawfile_id": rawfile_id,
-        "processed": total_processed,
-        "failed": total_failed,
-    }
+        await qdrant_client.close()
+
+        log.info(
+            "extract_embed_done",
+            rawfile_id=rawfile_id,
+            processed=total_processed,
+            failed=total_failed,
+        )
+        return {
+            "status": "COMPLETED",
+            "rawfile_id": rawfile_id,
+            "processed": total_processed,
+            "failed": total_failed,
+        }
+    except Exception as e:
+        log.exception("extraction_fatal_error", rawfile_id=rawfile_id, error=str(e))
+        async with AsyncSessionLocal() as fallback_session:
+            try:
+                parsed_id = UUID(rawfile_id)
+                await fallback_session.execute(
+                    update(RawFile).where(RawFile.id == parsed_id).values(status="FAILED", notes=f"Extraction fatal error: {e}")
+                )
+                await fallback_session.commit()
+            except Exception:
+                pass
+        return {"status": "FAILED", "error": str(e)}

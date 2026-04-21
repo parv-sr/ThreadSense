@@ -12,6 +12,7 @@ const STORAGE_KEY = 'threadsense.uploads'
 export const UploadsPage = () => {
   const ingestMutation = useIngestMutation()
   const [uploads, setUploads] = useState<UploadRecord[]>([])
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null)
 
   useEffect(() => {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -30,7 +31,16 @@ export const UploadsPage = () => {
 
   const handleUpload = async (file: File) => {
     try {
-      const result = await ingestMutation.mutateAsync(file)
+      setUploadProgress(0)
+      const result = await ingestMutation.mutateAsync({
+        file,
+        onUploadProgress: (e) => {
+          if (e.total) {
+            setUploadProgress(Math.round((e.loaded * 100) / e.total))
+          }
+        },
+      })
+      setUploadProgress(null)
       const next: UploadRecord[] = [
         {
           id: crypto.randomUUID(),
@@ -66,7 +76,19 @@ export const UploadsPage = () => {
         <p className='text-sm text-zinc-400'>Ingest conversation exports and inspect processing pipelines per file.</p>
       </div>
 
-      <UploadDropzone onFileSelect={handleUpload} />
+      {uploadProgress !== null ? (
+        <div className='flex flex-col gap-2 rounded-xl border border-cyan-500/30 bg-cyan-900/10 px-4 py-4 text-cyan-200'>
+          <div className="flex justify-between text-sm">
+            <span>Uploading...</span>
+            <span className="font-mono">{uploadProgress}%</span>
+          </div>
+          <div className='h-1 w-full overflow-hidden rounded bg-zinc-800'>
+            <div className='h-full bg-cyan-400 transition-all duration-300' style={{ width: `${uploadProgress}%` }} />
+          </div>
+        </div>
+      ) : (
+        <UploadDropzone onFileSelect={handleUpload} />
+      )}
 
       {ingestMutation.isError ? (
         <div className='flex items-center gap-2 rounded-xl border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-200'>

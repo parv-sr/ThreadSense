@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useLocation, useParams } from 'react-router-dom'
 import { format } from 'date-fns'
 import { Card } from '@/components/ui/card'
-import { createProcessingEventSource, parseDedupeStats, type DedupeStats, type UploadRecord } from '@/lib/api'
+import { parseDedupeStats, type DedupeStats, type UploadRecord, useTaskStatusQuery } from '@/lib/api'
 
 //Helpers
 
@@ -56,34 +56,22 @@ export const FileDetailsPage = () => {
     }
   }, [rawfileId, upload])
 
+  const { data: taskData } = useTaskStatusQuery(upload?.taskId, status !== 'COMPLETED' && status !== 'FAILED')
+
   useEffect(() => {
-    if (!upload?.taskId) return
-
-    const source = createProcessingEventSource(upload.taskId)
-    source.onmessage = (event) => {
-      const next = event.data
-      setLogLines((prev) => [...prev.slice(-199), next])
-
-      try {
-        const parsed = JSON.parse(next) as { status?: string; progress?: number; dedupe_stats?: unknown }
-        if (parsed.status) setStatus(parsed.status)
-        if (typeof parsed.progress === 'number') setProgress(Math.max(2, Math.min(100, parsed.progress)))
-        if (parsed.dedupe_stats) {
-          setUpload((prev) => (prev ? { ...prev, dedupeStats: parseDedupeStats(parsed.dedupe_stats) } : prev))
-        }
-      } catch {
-        if (next.toLowerCase().includes('completed')) setStatus('COMPLETED')
+    if (taskData) {
+      if (taskData.status) setStatus(taskData.status)
+      if (typeof taskData.progress_percentage === 'number') {
+        setProgress(Math.max(2, Math.min(100, taskData.progress_percentage)))
+      }
+      if (taskData.result?.dedupe_stats) {
+        setUpload((prev) => (prev ? { ...prev, dedupeStats: parseDedupeStats(taskData.result?.dedupe_stats) } : prev))
+      }
+      if (taskData.result?.notes) {
+        setLogLines([String(taskData.result.notes)])
       }
     }
-
-    source.addEventListener('error', () => {
-      setLogLines((prev) => [...prev.slice(-199), '[stream] connection issue. retrying...'])
-    })
-
-    return () => {
-      source.close()
-    }
-  }, [upload?.taskId])
+  }, [taskData])
 
   const dedupe = useMemo(() => parseDedupeStats(upload?.dedupeStats), [upload?.dedupeStats])
 
@@ -138,8 +126,13 @@ export const FileDetailsPage = () => {
           )}
         </div>
 
+        <div className='mt-2 flex items-center justify-between'>
+          <p className='text-sm text-zinc-300'>Overall Status</p>
+          <div className="font-mono-data text-xl font-bold text-cyan-300">{progress}%</div>
+        </div>
+
         <div className='mt-3 h-1 w-full overflow-hidden rounded bg-zinc-800'>
-          <div className='h-full bg-cyan-400 transition-all duration-300' style={{ width: `${progress}%` }} />
+          <div className='h-full bg-cyan-400 transition-all duration-300 shadow-[0_0_10px_rgba(34,211,238,0.5)]' style={{ width: `${progress}%` }} />
         </div>
 
         {/* Live area — now smart about duplicates */}

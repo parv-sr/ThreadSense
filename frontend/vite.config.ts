@@ -18,12 +18,7 @@ export default defineConfig({
         changeOrigin: true,
         secure: false,
       },
-      // Using Vite proxy so we don't need CORS in development.
-      '/ingest': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-        secure: false,
-      },
+
     },
   },
   resolve: {

@@ -77,5 +77,5 @@ async def unhandled_exception_handler(_: Request, exc: Exception) -> JSONRespons
     logger.exception("unhandled_exception", error=str(exc))
     return JSONResponse(
         status_code=500,
-        content={"detail": "Internal server error", "error": str(exc)},
+        content={"status": "error", "message": "An internal server error occurred."},
     )

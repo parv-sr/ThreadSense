@@ -168,6 +168,8 @@ async def ingest_raw_file_task(rawfile_id: str) -> dict[str, Any]:
                 raise IngestionError(f"Rust parser failed: {exc}") from exc
 
             stats.total_messages = len(parsed_rows)
+            rawfile.progress_percentage = 25
+            await session.commit()
             log.info("ingestion_parsed_rows", rawfile_id=str(rawfile.id), total_messages=stats.total_messages)
 
             # 1) in-chat dedupe and parser/system filtering
@@ -291,6 +293,7 @@ async def ingest_raw_file_task(rawfile_id: str) -> dict[str, Any]:
             rawfile.process_finished_at = datetime.now(timezone.utc)
             rawfile.notes = f"Processed {stats.total_messages} messages"
             rawfile.dedupe_stats = asdict(stats)
+            rawfile.progress_percentage = 50
 
             await session.commit()
             log.info(
@@ -347,11 +350,11 @@ async def ingest_raw_file_task(rawfile_id: str) -> dict[str, Any]:
             return {"status": "FAILED", "error": str(exc), "stats": asdict(stats)}
         except Exception as exc:  # noqa: BLE001
             await session.rollback()
-            stats.parser_failures += 1
-            rawfile.status = RawFileStatus.FAILED
-            rawfile.process_finished_at = datetime.now(timezone.utc)
-            rawfile.notes = f"Unhandled pipeline error: {exc}"
-            rawfile.dedupe_stats = asdict(stats)
-            await session.commit()
             log.exception("ingestion_unhandled_failure", rawfile_id=str(rawfile.id))
+            from sqlalchemy import update
+            async with AsyncSessionLocal() as fallback_session:
+                await fallback_session.execute(
+                    update(RawFile).where(RawFile.id == parsed_rawfile_id).values(status="FAILED", notes=f"Unhandled pipeline error: {exc}")
+                )
+                await fallback_session.commit()
             return {"status": "FAILED", "error": str(exc), "stats": asdict(stats)}
