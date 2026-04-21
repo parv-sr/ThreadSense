@@ -1,51 +1,64 @@
-import axios from 'axios'
+import axios, { type AxiosProgressEvent } from 'axios'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { supabase } from './supabase'
 import { env } from './env'
 import { toast } from 'sonner'
-import type { 
-  ChatPayload, 
-  ChatResponse, 
-  IngestResponse, 
-  SourceChunk, 
-  TaskStatusResponse, 
-  UploadSummary, 
+import type {
+  ChatPayload,
+  ChatResponse,
+  IngestResponse,
+  SourceChunk,
+  TaskStatusResponse,
+  UploadSummary,
   UploadDetail,
-  DedupeStats
+  DedupeStats,
 } from '../types/api'
+
+// ─── Axios instance ───────────────────────────────────────────────────────────
 
 export const api = axios.create({
   baseURL: env.apiUrl,
   timeout: 30_000,
 })
 
+// Attach the Supabase session token to every request.
+// If there is no session, skip silently — public routes still work.
 api.interceptors.request.use(async (config) => {
-  const { data: { session }, error } = await supabase.auth.getSession()
-  if (error || !session) {
-    // Attempt refresh before giving up
-    const { data: refreshed } = await supabase.auth.refreshSession()
-    if (refreshed.session?.access_token) {
-      config.headers.Authorization = `Bearer ${refreshed.session.access_token}`
-    }
-  } else if (session?.access_token) {
-    config.headers.Authorization = `Bearer ${session.access_token}`
+  const { data: { session } } = await supabase.auth.getSession()
+  const token = session?.access_token
+  if (token) {
+    config.headers.set('Authorization', `Bearer ${token}`)
   }
   return config
 })
 
+// Track whether a sign-out redirect is already in progress so we only fire once.
+let _signingOut = false
+
 api.interceptors.response.use(
   (response) => response,
-  (error) => {
+  async (error) => {
     if (error.response?.status === 401) {
-      supabase.auth.signOut().then(() => {
-        window.location.href = '/settings'
-      })
+      if (!_signingOut) {
+        _signingOut = true
+        console.warn('[ThreadSense] 401 received — session invalid, signing out.')
+        await supabase.auth.signOut()
+        window.location.replace('/settings')
+      }
     } else {
-      toast.error(error.response?.data?.message || 'An unexpected error occurred')
+      // Only show a toast for unexpected server errors, not auth failures.
+      const msg: string =
+        error.response?.data?.detail ||
+        error.response?.data?.message ||
+        error.message ||
+        'An unexpected error occurred'
+      toast.error(msg, { id: msg }) // `id` deduplicates identical toasts
     }
     return Promise.reject(error)
   }
 )
+
+// ─── DedupeStats helpers ──────────────────────────────────────────────────────
 
 const DEDUPE_DEFAULTS: DedupeStats = {
   total_messages: 0,
@@ -66,7 +79,6 @@ const DEDUPE_DEFAULTS: DedupeStats = {
 export const parseDedupeStats = (value: unknown): DedupeStats => {
   if (!value || typeof value !== 'object') return DEDUPE_DEFAULTS
   const source = value as Record<string, unknown>
-
   return {
     ...DEDUPE_DEFAULTS,
     total_messages: Number(source.total_messages ?? 0),
@@ -81,9 +93,11 @@ export const parseDedupeStats = (value: unknown): DedupeStats => {
     created_chunks: Number(source.created_chunks ?? 0),
     ignored_chunks: Number(source.ignored_chunks ?? 0),
     parser_failures: Number(source.parser_failures ?? 0),
-    notes: Array.isArray(source.notes) ? source.notes.map((entry) => String(entry)) : [],
+    notes: Array.isArray(source.notes) ? source.notes.map((e) => String(e)) : [],
   }
 }
+
+// ─── Mutations ────────────────────────────────────────────────────────────────
 
 export const useChatMutation = () =>
   useMutation({
@@ -95,7 +109,13 @@ export const useChatMutation = () =>
 
 export const useIngestMutation = () =>
   useMutation({
-    mutationFn: async ({ file, onUploadProgress }: { file: File; onUploadProgress?: (progressEvent: any) => void }) => {
+    mutationFn: async ({
+      file,
+      onUploadProgress,
+    }: {
+      file: File
+      onUploadProgress?: (progressEvent: AxiosProgressEvent) => void
+    }) => {
       const formData = new FormData()
       formData.append('file', file)
       const { data } = await api.post<IngestResponse>('/ingest/', formData, {
@@ -106,13 +126,16 @@ export const useIngestMutation = () =>
     },
   })
 
+// ─── Queries ──────────────────────────────────────────────────────────────────
+
+/** Poll task status every 4 s, stopping when terminal. */
 export const useTaskStatusQuery = (taskId?: string, enabled = true) =>
   useQuery({
     queryKey: ['task-status', taskId],
     enabled: Boolean(taskId) && enabled,
     refetchInterval: (query) => {
-      const status = query.state.data?.status
-      if (status === 'COMPLETED' || status === 'FAILED') return false
+      const s = query.state.data?.status
+      if (s === 'COMPLETED' || s === 'FAILED') return false
       return 4_000
     },
     refetchIntervalInBackground: false,
@@ -122,6 +145,11 @@ export const useTaskStatusQuery = (taskId?: string, enabled = true) =>
     },
   })
 
+/**
+ * Upload list — no automatic background polling.
+ * The page can call `refetch()` explicitly after an upload completes,
+ * or the user can navigate away and back to refresh.
+ */
 export const useUploadsQuery = () =>
   useQuery({
     queryKey: ['uploads'],
@@ -129,9 +157,11 @@ export const useUploadsQuery = () =>
       const { data } = await api.get('/ingest/uploads')
       return data.uploads as UploadSummary[]
     },
-    refetchInterval: 8_000,
+    staleTime: 30_000,   // treat data fresh for 30 s
+    refetchOnWindowFocus: true, // refetch when user returns to tab
   })
 
+/** Single upload detail — no polling; real-time updates come via SSE. */
 export const useUploadDetailQuery = (rawfileId: string | undefined) =>
   useQuery({
     queryKey: ['upload-detail', rawfileId],
@@ -140,6 +170,8 @@ export const useUploadDetailQuery = (rawfileId: string | undefined) =>
       const { data } = await api.get(`/ingest/uploads/${rawfileId}`)
       return data as UploadDetail
     },
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
   })
 
 export const useSourceQuery = (chunkId?: string, enabled = true) =>

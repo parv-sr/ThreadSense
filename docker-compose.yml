@@ -19,6 +19,9 @@ services:
       QDRANT_API_KEY: ${QDRANT_API_KEY}
       QDRANT_CLUSTER_ENDPOINT: ${QDRANT_CLUSTER_ENDPOINT}
       OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET}
+      VITE_SUPABASE_URL: ${VITE_SUPABASE_URL}
+      VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY}
     volumes:
       - ./backend:/app/backend
       - ./rust_parser:/app/rust_parser
@@ -45,6 +48,9 @@ services:
       QDRANT_URL: ${QDRANT_URL}
       QDRANT_API_KEY: ${QDRANT_API_KEY}
       OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET}
+      VITE_SUPABASE_URL: ${VITE_SUPABASE_URL}
+      VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY}
     volumes:
       - ./backend:/app/backend
       - ./rust_parser:/app/rust_parser

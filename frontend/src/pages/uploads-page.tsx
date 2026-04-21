@@ -3,11 +3,14 @@ import { AlertTriangle, Loader2 } from 'lucide-react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
 import { Link } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import { UploadDropzone } from '@/components/upload/upload-dropzone'
 import { Card } from '@/components/ui/card'
 import { useIngestMutation, useUploadsQuery } from '@/lib/api'
+import type { IngestResponse } from '@/types/api'
 
 export const UploadsPage = () => {
+  const queryClient = useQueryClient()
   const ingestMutation = useIngestMutation()
   const { data: uploads = [] } = useUploadsQuery()
   const [uploadProgress, setUploadProgress] = useState<number | null>(null)
@@ -24,7 +27,10 @@ export const UploadsPage = () => {
         },
       })
       setUploadProgress(null)
-      toast.success(result.status === 'ALREADY_EXISTS' ? 'Duplicate file detected.' : 'Upload queued successfully.')
+      const r = result as IngestResponse
+      toast.success(r.status === 'ALREADY_EXISTS' ? 'Duplicate file detected.' : 'Upload queued successfully.')
+      // Refresh upload list after a successful upload
+      queryClient.invalidateQueries({ queryKey: ['uploads'] })
     } catch {
       toast.error('Upload failed. Please try again.')
     }
