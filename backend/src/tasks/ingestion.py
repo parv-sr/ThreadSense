@@ -10,6 +10,7 @@ from typing import Any
 
 import structlog
 from sqlalchemy import Select, select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from backend.src.db.session import AsyncSessionLocal
@@ -103,7 +104,12 @@ async def ingest_raw_file_task(rawfile_id: str) -> dict[str, Any]:
         return {"status": "FAILED", "error": f"Invalid rawfile_id: {exc}", "stats": asdict(stats)}
 
     async with AsyncSessionLocal() as session:
-        rawfile = await session.get(RawFile, parsed_rawfile_id)
+        rawfile_result = await session.execute(
+            select(RawFile)
+            .where(RawFile.id == parsed_rawfile_id)
+            .options(selectinload(RawFile.raw_chunks))
+        )
+        rawfile = rawfile_result.scalars().first()
         if rawfile is None:
             return {"status": "FAILED", "error": "RawFile not found", "stats": asdict(stats)}
         log.info("ingestion_rawfile_loaded", rawfile_id=str(rawfile.id), filename=rawfile.file_name)

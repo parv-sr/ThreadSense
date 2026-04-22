@@ -270,7 +270,7 @@ async def _process_batch(
     # 6. Mark chunks as EMBEDDED in Postgres
     succeeded = 0
     for chunk in valid_chunks:
-        chunk.status = "EMBEDDED"
+        chunk.status = RawMessageChunkStatus.EMBEDDED
         session.add(chunk)
         succeeded += 1
 

@@ -11,6 +11,11 @@ export const FileDetailsPage = () => {
   const streamState = useUploadStream(rawfileId)
   const [logLines, setLogLines] = useState<string[]>(['Waiting for processing events...'])
 
+  // Reset logLines when rawfileId changes
+  useEffect(() => {
+    setLogLines(['Waiting for processing events...'])
+  }, [rawfileId])
+
   // Derive display values from stream snapshot or fallback to REST data
   const status = streamState.snapshot?.status ?? detailData?.upload?.status ?? 'PENDING'
   const progress = streamState.snapshot?.percentage ?? 8
@@ -34,17 +39,17 @@ export const FileDetailsPage = () => {
     <section className='space-y-6'>
       <Card className='p-5'>
         <p className='text-xs uppercase tracking-wider text-zinc-500'>Section A · File Metadata</p>
-        <h1 className='mt-2 text-2xl font-semibold'>{upload?.name ?? `Upload ${rawfileId}`}</h1>
+        <h1 className='mt-2 text-2xl font-semibold'>{upload?.fileName ?? `Upload ${rawfileId}`}</h1>
         <div className='mt-4 grid gap-3 md:grid-cols-3'>
           <div className='tactile-subtle rounded-xl p-3'>
             <p className='text-xs text-zinc-400'>Upload Time</p>
             <p className='font-mono-data text-sm text-zinc-200'>
-              {upload?.uploaded_at ? format(new Date(upload.uploaded_at), 'PPpp') : 'Unavailable'}
+              {upload?.uploadedAt ? format(new Date(upload.uploadedAt), 'PPpp') : 'Unavailable'}
             </p>
           </div>
           <div className='tactile-subtle rounded-xl p-3'>
-            <p className='text-xs text-zinc-400'>File Size</p>
-            <p className='font-mono-data text-sm text-zinc-200'>{upload?.file_size?.toLocaleString() ?? 0} bytes</p>
+            <p className='text-xs text-zinc-400'>Source</p>
+            <p className='font-mono-data text-sm text-zinc-200'>{upload?.source ?? 'N/A'}</p>
           </div>
           <div className='tactile-subtle rounded-xl p-3'>
             <p className='text-xs text-zinc-400'>Raw File ID</p>
@@ -82,6 +87,18 @@ export const FileDetailsPage = () => {
         <div className='mt-3 h-1 w-full overflow-hidden rounded bg-zinc-800'>
           <div className='h-full bg-cyan-400 transition-all duration-300 shadow-[0_0_10px_rgba(34,211,238,0.5)]' style={{ width: `${progress}%` }} />
         </div>
+
+        {/* Stream error display */}
+        {streamState.error && (
+          <div className='mt-2 rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300'>
+            Stream error: {streamState.error}
+          </div>
+        )}
+
+        {/* Processing complete badge */}
+        {streamState.isDone && (
+          <div className='mt-2 text-sm text-emerald-400 font-semibold'>✅ Processing complete.</div>
+        )}
 
         {/* Live area */}
         <div className='mt-4 max-h-[300px] overflow-auto rounded-xl border border-zinc-800 bg-black p-4'>

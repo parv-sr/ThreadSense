@@ -43,6 +43,7 @@ api.interceptors.response.use(
         _signingOut = true
         console.warn('[ThreadSense] 401 received — session invalid, signing out.')
         await supabase.auth.signOut()
+        setTimeout(() => { _signingOut = false }, 3000) // Allow retry after redirect
         window.location.replace('/settings')
       }
     } else {

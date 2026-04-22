@@ -54,7 +54,8 @@ async def lifespan(app: FastAPI):
         logger.info("rag_retriever_ready")
     except Exception as exc:  # noqa: BLE001
         app.state.rag_retriever = None
-        logger.exception("rag_retriever_init_failed", error=str(exc))
+        app.state.rag_retriever_error = str(exc)
+        logger.warning("rag_retriever_init_failed", error=str(exc))
 
     try:
         yield
@@ -68,8 +69,9 @@ app.include_router(api_router)
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok", "service": settings.app_name}
+async def health(request: Request) -> dict[str, str]:
+    status = "degraded" if getattr(request.app.state, "rag_retriever", None) is None else "ok"
+    return {"status": status, "service": settings.app_name}
 
 
 @app.exception_handler(Exception)

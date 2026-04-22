@@ -239,14 +239,12 @@ class EmbeddingService:
 
     async def truncate_all_points(self) -> None:
         log.warning("qdrant_truncate_started", collection=QDRANT_COLLECTION)
-
-        await self.qdrant.delete(
-            collection_name=QDRANT_COLLECTION,
-            points_selector=qmodels.FilterSelector(
-                filter=qmodels.Filter(must=[])
-            )
-        )
-
+        # Delete and recreate the collection to ensure all points are removed
+        await self.qdrant.delete_collection(collection_name=QDRANT_COLLECTION)
+        log.warning("qdrant_collection_deleted", collection=QDRANT_COLLECTION)
+        # Re-run ensure_collection to rebuild with correct schema
+        self._collection_ready = False
+        await self.ensure_collection()
         log.warning("qdrant_truncate_finished", collection=QDRANT_COLLECTION)
 
     async def close(self) -> None:

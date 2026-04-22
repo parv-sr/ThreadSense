@@ -1,14 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, Header
 import os
 
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-engine = create_async_engine(DATABASE_URL)
-SessionLocal = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+from backend.src.db.session import AsyncSessionLocal
 
 router = APIRouter()
 
@@ -18,7 +14,7 @@ def verify_admin(x_api_key: str = Header(...)):
         raise HTTPException(status_code=403, detail="Forbidden")
     
 async def get_db():
-    async with SessionLocal() as session:
+    async with AsyncSessionLocal() as session:
         yield session
 
 @router.post("/truncate-db")

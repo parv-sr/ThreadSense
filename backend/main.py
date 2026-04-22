@@ -1,8 +1,3 @@
-from fastapi import FastAPI
-
-router = FastAPI()
-
-@router.get('/')
-def main():
-    return "Hello world!"
-
+# This file is intentionally empty.
+# The application entrypoint is backend/src/main.py (app = FastAPI(...))
+# Run with: uvicorn backend.src.main:app --reload

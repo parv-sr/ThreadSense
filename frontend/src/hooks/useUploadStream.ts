@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase'
 import { env } from '../lib/env'
 
 interface UploadStreamState {
-  snapshot: any | null
+  snapshot: any | null // TODO: type this — snapshot shape is dynamic from SSE, mirrors UploadDetail partially
   heartbeat: string | null
   isDone: boolean
   isConnected: boolean
@@ -30,11 +30,17 @@ export const useUploadStream = (rawfileId: string | undefined) => {
 
     const connectStream = async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession()
-        const token = session?.access_token
+        // Retry loop waiting for the session token
+        let token: string | undefined
+        for (let attempt = 0; attempt < 5; attempt++) {
+          const { data: { session } } = await supabase.auth.getSession()
+          token = session?.access_token
+          if (token) break
+          await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)))
+        }
 
         if (!token) {
-          if (isMounted) setState(s => ({ ...s, error: 'No active session' }))
+          if (isMounted) setState(s => ({ ...s, error: 'Authentication required. Please log in.' }))
           return
         }
 

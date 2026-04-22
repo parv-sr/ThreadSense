@@ -1,8 +1,3 @@
-from fastapi import APIRouter
-from typing import Any
-
-router = APIRouter()
-
-@router.get("/fetch_progress")
-def fetch_progress() -> Any:
-    pass
+# This file is intentionally empty — dead code removed.
+# Progress tracking is handled by GET /ingest/uploads/{rawfileId}/progress
+# in backend/src/api/endpoints/ingestion.py.

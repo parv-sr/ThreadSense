@@ -108,9 +108,9 @@ export const UploadsPage = () => {
               </thead>
               <tbody>
                 {uploads.map((event) => (
-                  <tr key={event.id} className='border-b border-zinc-800/70'>
-                    <td className='px-4 py-3 text-zinc-200'>{event.name}</td>
-                    <td className='font-mono-data px-4 py-3 text-zinc-400'>{format(new Date(event.uploaded_at), 'PPpp')}</td>
+                  <tr key={event.rawfileId} className='border-b border-zinc-800/70'>
+                    <td className='px-4 py-3 text-zinc-200'>{event.fileName}</td>
+                    <td className='font-mono-data px-4 py-3 text-zinc-400'>{format(new Date(event.uploadedAt), 'PPpp')}</td>
                     <td className='px-4 py-3'>
                       <span className='rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-xs text-zinc-300'>
                         {event.status}
@@ -118,7 +118,7 @@ export const UploadsPage = () => {
                     </td>
                     <td className='px-4 py-3'>
                       <Link
-                        to={`/uploads/${event.rawfile_id}`}
+                        to={`/uploads/${event.rawfileId}`}
                         className='inline-flex h-8 items-center justify-center rounded-md bg-cyan-400 px-3 text-xs font-semibold text-zinc-950 transition hover:bg-cyan-300'
                       >
                         View Details

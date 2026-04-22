@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
-
 from backend.src.core.config import get_settings
 
 settings = get_settings()
@@ -16,12 +14,20 @@ def _with_redis_health_check(url: str, interval: int = 30) -> str:
     return urlunparse(parsed._replace(query=urlencode(query)))
 
 
-broker = ListQueueBroker(url=_with_redis_health_check(settings.redis_url)).with_result_backend(
-    RedisAsyncResultBackend(
-        redis_url=_with_redis_health_check(settings.redis_broker_url),
-        result_ex_time=settings.taskiq_result_ttl_seconds,
+try:
+    from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
+
+    broker = ListQueueBroker(url=_with_redis_health_check(settings.redis_url)).with_result_backend(
+        RedisAsyncResultBackend(
+            redis_url=_with_redis_health_check(settings.redis_broker_url),
+            result_ex_time=settings.taskiq_result_ttl_seconds,
+        )
     )
-)
+except Exception as e:
+    import logging
+    logging.critical(f"[ThreadSense] Redis unavailable at startup: {e}. Task queue disabled.")
+    from taskiq import InMemoryBroker
+    broker = InMemoryBroker()
 
 # Ensure task registration side-effect on import.
 from backend.src.tasks import ingestion as _ingestion  # noqa: F401,E402

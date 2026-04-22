@@ -38,6 +38,7 @@ async def preprocess_rawfile_task(rawfile_id: str) -> dict[str, int | str]:
             return {"status": "FAILED", "error": "RawFile not found"}
 
         rawfile.status = RawFileStatus.PROCESSING
+        rawfile.progress_percentage = 55
         rawfile.process_started_at = rawfile.process_started_at or datetime.now(timezone.utc)
         await session.commit()
         log.info("preprocess_rawfile_marked_processing", rawfile_id=rawfile_id)
@@ -56,6 +57,13 @@ async def preprocess_rawfile_task(rawfile_id: str) -> dict[str, int | str]:
                     "extracted": 0,
                     "failed": 0,
                 }
+
+            # Update progress after chunks loaded
+            async with AsyncSessionLocal() as update_session:
+                rf = await update_session.get(RawFile, parsed_id)
+                if rf:
+                    rf.progress_percentage = 65
+                    await update_session.commit()
 
             extracted_count, failed_count = await pipeline.process_raw_chunks(session=session, raw_chunks=chunks)
             outcome_status = RawFileStatus.COMPLETED
@@ -85,16 +93,22 @@ async def preprocess_rawfile_task(rawfile_id: str) -> dict[str, int | str]:
         # Safety net for worker interruptions/retries: reset lingering PROCESSING rows.
         async with AsyncSessionLocal() as cleanup_session:
             cleanup_rawfile: RawFile | None = await cleanup_session.get(RawFile, parsed_id)
-            if cleanup_rawfile is not None and cleanup_rawfile.status == RawFileStatus.PROCESSING:
-                cleanup_rawfile.status = outcome_status
-                cleanup_rawfile.process_finished_at = datetime.now(timezone.utc)
-                cleanup_rawfile.processed = outcome_status == RawFileStatus.COMPLETED
+            if cleanup_rawfile is not None and cleanup_rawfile.status in (
+                RawFileStatus.PROCESSING, RawFileStatus.PENDING
+            ):
+                # If task_error exists and we're on final retry, mark FAILED
                 if task_error is not None and outcome_status != RawFileStatus.COMPLETED:
-                    cleanup_rawfile.notes = f"Preprocessing retry scheduled: {task_error}"
+                    cleanup_rawfile.status = RawFileStatus.FAILED
+                    cleanup_rawfile.notes = f"Preprocessing failed: {task_error}"
+                elif outcome_status == RawFileStatus.COMPLETED:
+                    cleanup_rawfile.status = RawFileStatus.COMPLETED
+                    cleanup_rawfile.progress_percentage = 100
+                cleanup_rawfile.process_finished_at = datetime.now(timezone.utc)
+                cleanup_rawfile.processed = (cleanup_rawfile.status == RawFileStatus.COMPLETED)
                 await cleanup_session.commit()
                 log.info(
                     "preprocess_cleanup_status_applied",
                     rawfile_id=rawfile_id,
-                    outcome_status=str(outcome_status),
+                    outcome_status=str(cleanup_rawfile.status),
                     has_error=task_error is not None,
                 )

@@ -1,3 +1,4 @@
+// Corresponds to: _build_progress_payload() in backend/src/api/endpoints/ingestion.py
 export interface ProgressPayload {
   status: 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED'
   percentage: number
@@ -11,6 +12,7 @@ export interface ProgressPayload {
   listings_extracted: number
 }
 
+// Corresponds to: _fetch_upload_detail_payload() → listings[] in backend/src/api/endpoints/ingestion.py
 export interface ListingItem {
   id: string
   rawChunkId: string
@@ -32,16 +34,25 @@ export interface ListingItem {
   excerpt: string
 }
 
+// Corresponds to: GET /ingest/uploads → uploads[] in backend/src/api/endpoints/ingestion.py
 export interface UploadSummary {
-  id: string
-  rawfile_id: string
-  name: string
+  rawfileId: string
+  fileName: string
   status: string
-  uploaded_at: string
-  task_id: string
-  file_size: number
+  processed: boolean
+  uploadedAt: string
+  processStartedAt: string | null
+  processFinishedAt: string | null
+  notes: string | null
+  source: string | null
+  taskId: string | null
+  dedupeStats: Record<string, unknown>
+  progress: ProgressPayload
+  listingsCount: number
+  averageConfidence: number | null
 }
 
+// Corresponds to: GET /ingest/uploads/{rawfileId} in backend/src/api/endpoints/ingestion.py
 export interface UploadDetail {
   upload: UploadSummary
   insights: {
@@ -54,23 +65,27 @@ export interface UploadDetail {
   streamedAt: string
 }
 
+// Corresponds to: POST /chat/ request body
 export interface ChatPayload {
   message: string
   thread_id?: string
 }
 
+// Corresponds to: POST /chat/ response
 export interface ChatResponse {
   table_html: string
   reasoning: string
   sources: string[]
 }
 
+// Corresponds to: POST /ingest/ response
 export interface IngestResponse {
   task_id: string
   rawfile_id: string
   status: 'QUEUED' | 'ALREADY_EXISTS' | string
 }
 
+// Corresponds to: GET /chat/source/{chunkId} response
 export interface SourceChunk {
   chunk_id: string
   message_start: string | null
@@ -81,6 +96,7 @@ export interface SourceChunk {
   created_at: string | null
 }
 
+// Corresponds to: GET /ingest/status/{task_id} response
 export interface TaskStatusResponse {
   status: 'PENDING' | 'COMPLETED' | 'FAILED' | 'PROCESSING' | string
   task_id: string
@@ -89,6 +105,7 @@ export interface TaskStatusResponse {
   error?: string
 }
 
+// Corresponds to: dedupe_stats dict from backend DedupeStats dataclass
 export interface DedupeStats {
   total_messages: number
   system_filtered: number

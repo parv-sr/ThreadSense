@@ -25,6 +25,7 @@ class RawMessageChunkStatus(StrEnum):
     IGNORED = "IGNORED"
     ERROR = "ERROR"
     DUPLICATE_LOCAL = "DUPLICATE_LOCAL"
+    EMBEDDED = "EMBEDDED"
 
 
 class RawFile(Base):
