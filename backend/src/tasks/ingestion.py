@@ -10,7 +10,6 @@ from typing import Any
 
 import structlog
 from sqlalchemy import Select, select
-from sqlalchemy.orm import selectinload
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from backend.src.db.session import AsyncSessionLocal
@@ -103,155 +102,179 @@ async def ingest_raw_file_task(rawfile_id: str) -> dict[str, Any]:
     except ValueError as exc:
         return {"status": "FAILED", "error": f"Invalid rawfile_id: {exc}", "stats": asdict(stats)}
 
+    # ---------------------------------------------------------------
+    # Phase 0: Load metadata and mark PROCESSING (short-lived session)
+    # ---------------------------------------------------------------
     async with AsyncSessionLocal() as session:
-        rawfile_result = await session.execute(
-            select(RawFile)
-            .where(RawFile.id == parsed_rawfile_id)
-            .options(selectinload(RawFile.raw_chunks))
-        )
-        rawfile = rawfile_result.scalars().first()
+        rawfile = await session.get(RawFile, parsed_rawfile_id)
         if rawfile is None:
             return {"status": "FAILED", "error": "RawFile not found", "stats": asdict(stats)}
-        log.info("ingestion_rawfile_loaded", rawfile_id=str(rawfile.id), filename=rawfile.file_name)
 
-        try:
-            rawfile.status = RawFileStatus.PROCESSING
-            rawfile.process_started_at = started_at
-            await session.commit()
-            log.info("ingestion_rawfile_marked_processing", rawfile_id=str(rawfile.id))
+        # Capture scalar values we need across session boundaries
+        rf_id = rawfile.id
+        rf_file_name = rawfile.file_name
+        rf_content = rawfile.content or ""
+        rf_file = rawfile.file
+        rf_owner_id = rawfile.owner_id
 
-            content = rawfile.content or ""
-            if not content.strip() and rawfile.file:
-                try:
-                    content = Path(rawfile.file).read_text(encoding="utf-8")
-                except UnicodeDecodeError:
-                    content = Path(rawfile.file).read_text(encoding="cp1252")
-                except Exception as exc:  # noqa: BLE001
-                    raise IngestionError(f"Unable to read source file: {exc}") from exc
+        rawfile.status = RawFileStatus.PROCESSING
+        rawfile.process_started_at = started_at
+        await session.commit()
+        log.info("ingestion_rawfile_loaded", rawfile_id=str(rf_id), filename=rf_file_name)
 
-            if not content.strip():
-                stats.add_note("Empty upload")
+    # ---------------------------------------------------------------
+    # Phase 1: Read file content (no session needed, CPU/IO bound)
+    # ---------------------------------------------------------------
+    try:
+        content = rf_content
+        if not content.strip() and rf_file:
+            try:
+                content = Path(rf_file).read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                content = Path(rf_file).read_text(encoding="cp1252")
+            except Exception as exc:  # noqa: BLE001
+                raise IngestionError(f"Unable to read source file: {exc}") from exc
+
+        if not content.strip():
+            stats.add_note("Empty upload")
+            async with AsyncSessionLocal() as session:
+                rawfile = await session.get(RawFile, parsed_rawfile_id)
                 rawfile.status = RawFileStatus.COMPLETED
                 rawfile.processed = True
                 rawfile.process_finished_at = datetime.now(timezone.utc)
                 rawfile.notes = "No valid messages."
                 rawfile.dedupe_stats = asdict(stats)
                 await session.commit()
-                log.info("ingestion_empty_upload_completed", rawfile_id=str(rawfile.id))
-                return {"status": "COMPLETED", "rawfile_id": rawfile_id, "stats": asdict(stats)}
+            log.info("ingestion_empty_upload_completed", rawfile_id=str(rf_id))
+            return {"status": "COMPLETED", "rawfile_id": rawfile_id, "stats": asdict(stats)}
 
-            try:
-                import whatsapp_parser  # type: ignore
-            except Exception as exc:  # noqa: BLE001
-                raise IngestionError(f"Rust parser import failed: {exc}") from exc
+        # ---------------------------------------------------------------
+        # Phase 2: Parse with Rust parser (CPU-bound, no session)
+        # ---------------------------------------------------------------
+        try:
+            import whatsapp_parser  # type: ignore
+        except Exception as exc:  # noqa: BLE001
+            raise IngestionError(f"Rust parser import failed: {exc}") from exc
 
-            try:
-                suffix = Path(rawfile.file_name).suffix.lower()
-                if suffix in {".zip", ".rar"}:
-                    parsed_rows = whatsapp_parser.parse_zip(rawfile.file)
-                elif suffix == ".txt":
-                    if content.strip():
-                        parsed_rows = whatsapp_parser.parse_text(content)
-                    elif rawfile.file:
-                        try:
-                            parsed_rows = whatsapp_parser.parse_file(rawfile.file)
-                        except Exception as file_exc:  # noqa: BLE001
-                            if content.strip():
-                                log.warning(
-                                    "ingestion_parse_file_fallback_to_text",
-                                    rawfile_id=str(rawfile.id),
-                                    file_path=rawfile.file,
-                                    error=str(file_exc),
-                                )
-                                parsed_rows = whatsapp_parser.parse_text(content)
-                            else:
-                                raise
-                    else:
-                        parsed_rows = whatsapp_parser.parse_text(content)
+        try:
+            suffix = Path(rf_file_name).suffix.lower()
+            if suffix in {".zip", ".rar"}:
+                parsed_rows = whatsapp_parser.parse_zip(rf_file)
+            elif suffix == ".txt":
+                if content.strip():
+                    parsed_rows = whatsapp_parser.parse_text(content)
+                elif rf_file:
+                    try:
+                        parsed_rows = whatsapp_parser.parse_file(rf_file)
+                    except Exception as file_exc:  # noqa: BLE001
+                        if content.strip():
+                            log.warning(
+                                "ingestion_parse_file_fallback_to_text",
+                                rawfile_id=str(rf_id),
+                                file_path=rf_file,
+                                error=str(file_exc),
+                            )
+                            parsed_rows = whatsapp_parser.parse_text(content)
+                        else:
+                            raise
                 else:
                     parsed_rows = whatsapp_parser.parse_text(content)
-            except Exception as exc:  # noqa: BLE001
-                raise IngestionError(f"Rust parser failed: {exc}") from exc
+            else:
+                parsed_rows = whatsapp_parser.parse_text(content)
+        except Exception as exc:  # noqa: BLE001
+            raise IngestionError(f"Rust parser failed: {exc}") from exc
 
-            stats.total_messages = len(parsed_rows)
+        stats.total_messages = len(parsed_rows)
+
+        # Update progress in a short-lived session
+        async with AsyncSessionLocal() as session:
+            rawfile = await session.get(RawFile, parsed_rawfile_id)
             rawfile.progress_percentage = 25
             await session.commit()
-            log.info("ingestion_parsed_rows", rawfile_id=str(rawfile.id), total_messages=stats.total_messages)
+        log.info("ingestion_parsed_rows", rawfile_id=str(rf_id), total_messages=stats.total_messages)
 
-            # 1) in-chat dedupe and parser/system filtering
-            local_seen: set[str] = set()
-            stage_one: list[dict[str, Any]] = []
-            for row in parsed_rows:
-                status = getattr(row, "status", "NEW")
-                cleaned_text = (getattr(row, "cleaned_text", None) or "").strip()
-                raw_text = (getattr(row, "raw_text", "") or "").strip()
-                sender = getattr(row, "sender", None)
-                message_start = getattr(row, "message_start", None)
+        # ---------------------------------------------------------------
+        # Phase 3: In-memory deduplication (no session needed)
+        # ---------------------------------------------------------------
 
-                if status == "IGNORED":
-                    stats.system_filtered += 1
-                    if "media omitted" in raw_text.lower() or "media omitted" in cleaned_text.lower():
-                        stats.media_count += 1
-                    stats.ignored_chunks += 1
-                    continue
+        # 1) in-chat dedupe and parser/system filtering
+        local_seen: set[str] = set()
+        stage_one: list[dict[str, Any]] = []
+        for row in parsed_rows:
+            status = getattr(row, "status", "NEW")
+            cleaned_text = (getattr(row, "cleaned_text", None) or "").strip()
+            raw_text = (getattr(row, "raw_text", "") or "").strip()
+            sender = getattr(row, "sender", None)
+            message_start = getattr(row, "message_start", None)
 
-                if not cleaned_text:
-                    stats.system_filtered += 1
-                    stats.ignored_chunks += 1
-                    continue
+            if status == "IGNORED":
+                stats.system_filtered += 1
+                if "media omitted" in raw_text.lower() or "media omitted" in cleaned_text.lower():
+                    stats.media_count += 1
+                stats.ignored_chunks += 1
+                continue
 
-                if JUNK_RE.search(cleaned_text):
-                    stats.system_filtered += 1
-                    stats.ignored_chunks += 1
-                    continue
+            if not cleaned_text:
+                stats.system_filtered += 1
+                stats.ignored_chunks += 1
+                continue
 
-                if not _looks_like_listing_candidate(cleaned_text):
-                    stats.keyword_filtered += 1
-                    stats.ignored_chunks += 1
-                    continue
+            if JUNK_RE.search(cleaned_text):
+                stats.system_filtered += 1
+                stats.ignored_chunks += 1
+                continue
 
-                dedupe_hash = _normalize_for_hash(cleaned_text, sender)
-                if dedupe_hash in local_seen or status == "DUPLICATE_LOCAL":
-                    stats.local_duplicates += 1
-                    stats.ignored_chunks += 1
-                    continue
-                local_seen.add(dedupe_hash)
+            if not _looks_like_listing_candidate(cleaned_text):
+                stats.keyword_filtered += 1
+                stats.ignored_chunks += 1
+                continue
 
-                stage_one.append(
-                    {
-                        "sender": sender,
-                        "message_start": message_start,
-                        "raw_text": raw_text[:10000],
-                        "cleaned_text": cleaned_text[:10000],
-                        "dedupe_hash": dedupe_hash,
-                    }
-                )
+            dedupe_hash = _normalize_for_hash(cleaned_text, sender)
+            if dedupe_hash in local_seen or status == "DUPLICATE_LOCAL":
+                stats.local_duplicates += 1
+                stats.ignored_chunks += 1
+                continue
+            local_seen.add(dedupe_hash)
 
-            # 2) in-batch dedupe
-            batch_seen: set[str] = set()
-            stage_two: list[dict[str, Any]] = []
-            for item in stage_one:
-                if item["dedupe_hash"] in batch_seen:
-                    stats.batch_duplicates += 1
-                    stats.ignored_chunks += 1
-                    continue
-                batch_seen.add(item["dedupe_hash"])
-                stage_two.append(item)
-            log.info(
-                "ingestion_stage_dedupe_summary",
-                rawfile_id=str(rawfile.id),
-                stage_one_count=len(stage_one),
-                stage_two_count=len(stage_two),
-                local_duplicates=stats.local_duplicates,
-                batch_duplicates=stats.batch_duplicates,
+            stage_one.append(
+                {
+                    "sender": sender,
+                    "message_start": message_start,
+                    "raw_text": raw_text[:10000],
+                    "cleaned_text": cleaned_text[:10000],
+                    "dedupe_hash": dedupe_hash,
+                }
             )
 
+        # 2) in-batch dedupe
+        batch_seen: set[str] = set()
+        stage_two: list[dict[str, Any]] = []
+        for item in stage_one:
+            if item["dedupe_hash"] in batch_seen:
+                stats.batch_duplicates += 1
+                stats.ignored_chunks += 1
+                continue
+            batch_seen.add(item["dedupe_hash"])
+            stage_two.append(item)
+        log.info(
+            "ingestion_stage_dedupe_summary",
+            rawfile_id=str(rf_id),
+            stage_one_count=len(stage_one),
+            stage_two_count=len(stage_two),
+            local_duplicates=stats.local_duplicates,
+            batch_duplicates=stats.batch_duplicates,
+        )
+
+        # ---------------------------------------------------------------
+        # Phase 4: DB dedupe + insert chunks (new short-lived session)
+        # ---------------------------------------------------------------
+        async with AsyncSessionLocal() as session:
             # 3) in-db dedupe
             existing_hashes: set[str] = set()
-            stmt = await _existing_hashes_stmt(rawfile.owner_id)
+            stmt = await _existing_hashes_stmt(rf_owner_id)
             for cleaned_text, sender in (await session.execute(stmt)).all():
                 existing_hashes.add(_normalize_for_hash(cleaned_text or "", sender))
-            log.info("ingestion_db_hashes_loaded", rawfile_id=str(rawfile.id), existing_hash_count=len(existing_hashes))
+            log.info("ingestion_db_hashes_loaded", rawfile_id=str(rf_id), existing_hash_count=len(existing_hashes))
 
             final_rows: list[RawMessageChunk] = []
             for item in stage_two:
@@ -269,14 +292,14 @@ async def ingest_raw_file_task(rawfile_id: str) -> dict[str, Any]:
 
                 final_rows.append(
                     RawMessageChunk(
-                        rawfile_id=rawfile.id,
+                        rawfile_id=rf_id,
                         message_start=parsed_dt,
                         sender=item["sender"],
                         raw_text=item["raw_text"],
                         cleaned_text=item["cleaned_text"],
                         split_into=0,
                         status="NEW",
-                        user_id=rawfile.owner_id,
+                        user_id=rf_owner_id,
                     )
                 )
 
@@ -288,12 +311,14 @@ async def ingest_raw_file_task(rawfile_id: str) -> dict[str, Any]:
             stats.finalize()
             log.info(
                 "ingestion_final_rows_prepared",
-                rawfile_id=str(rawfile.id),
+                rawfile_id=str(rf_id),
                 created_chunks=stats.created_chunks,
                 db_duplicates=stats.db_duplicates,
                 duplicates_removed=stats.duplicates_removed,
             )
 
+            # Re-fetch rawfile in this session to update final status
+            rawfile = await session.get(RawFile, parsed_rawfile_id)
             rawfile.status = RawFileStatus.COMPLETED
             rawfile.processed = True
             rawfile.process_finished_at = datetime.now(timezone.utc)
@@ -304,63 +329,66 @@ async def ingest_raw_file_task(rawfile_id: str) -> dict[str, Any]:
             await session.commit()
             log.info(
                 "ingestion_completed",
-                rawfile_id=str(rawfile.id),
+                rawfile_id=str(rf_id),
                 created=stats.created_chunks,
                 ignored=stats.ignored_chunks,
             )
 
-            # ---------------------------------------------------------------
-            # Phase 2: Chain preprocessing worker
-            # ---------------------------------------------------------------
-            if stats.created_chunks > 0:
-                from backend.src.preprocessing.tasks import preprocess_rawfile_task  # noqa: PLC0415
+        # ---------------------------------------------------------------
+        # Phase 5: Chain preprocessing worker
+        # ---------------------------------------------------------------
+        if stats.created_chunks > 0:
+            from backend.src.preprocessing.tasks import preprocess_rawfile_task  # noqa: PLC0415
 
-                try:
-                    await preprocess_rawfile_task.kiq(str(rawfile.id))
-                    log.info("preprocess_enqueued", rawfile_id=str(rawfile.id))
-                except Exception as chain_exc:  # noqa: BLE001
-                    # Non-fatal — ingestion succeeded; extraction can be retried manually
-                    log.warning(
-                        "preprocess_enqueue_failed",
-                        rawfile_id=str(rawfile.id),
-                        error=str(chain_exc),
-                    )
-
-            return {
-                "status": "COMPLETED",
-                "rawfile_id": str(rawfile.id),
-                "created": stats.created_chunks,
-                "ignored": stats.ignored_chunks,
-                "stats": asdict(stats),
-            }
-
-        except (IntegrityError, DBAPIError) as exc:
-            await session.rollback()
-            stats.parser_failures += 1
-            rawfile.status = RawFileStatus.FAILED
-            rawfile.process_finished_at = datetime.now(timezone.utc)
-            rawfile.notes = f"Database failure: {exc}"
-            rawfile.dedupe_stats = asdict(stats)
-            await session.commit()
-            log.exception("ingestion_db_failure", rawfile_id=str(rawfile.id))
-            return {"status": "FAILED", "error": str(exc), "stats": asdict(stats)}
-        except IngestionError as exc:
-            await session.rollback()
-            stats.parser_failures += 1
-            rawfile.status = RawFileStatus.FAILED
-            rawfile.process_finished_at = datetime.now(timezone.utc)
-            rawfile.notes = str(exc)
-            rawfile.dedupe_stats = asdict(stats)
-            await session.commit()
-            log.exception("ingestion_parser_failure", rawfile_id=str(rawfile.id), error=str(exc))
-            return {"status": "FAILED", "error": str(exc), "stats": asdict(stats)}
-        except Exception as exc:  # noqa: BLE001
-            await session.rollback()
-            log.exception("ingestion_unhandled_failure", rawfile_id=str(rawfile.id))
-            from sqlalchemy import update
-            async with AsyncSessionLocal() as fallback_session:
-                await fallback_session.execute(
-                    update(RawFile).where(RawFile.id == parsed_rawfile_id).values(status="FAILED", notes=f"Unhandled pipeline error: {exc}")
+            try:
+                await preprocess_rawfile_task.kiq(str(rf_id))
+                log.info("preprocess_enqueued", rawfile_id=str(rf_id))
+            except Exception as chain_exc:  # noqa: BLE001
+                # Non-fatal — ingestion succeeded; extraction can be retried manually
+                log.warning(
+                    "preprocess_enqueue_failed",
+                    rawfile_id=str(rf_id),
+                    error=str(chain_exc),
                 )
-                await fallback_session.commit()
-            return {"status": "FAILED", "error": str(exc), "stats": asdict(stats)}
+
+        return {
+            "status": "COMPLETED",
+            "rawfile_id": str(rf_id),
+            "created": stats.created_chunks,
+            "ignored": stats.ignored_chunks,
+            "stats": asdict(stats),
+        }
+
+    except (IntegrityError, DBAPIError) as exc:
+        stats.parser_failures += 1
+        async with AsyncSessionLocal() as session:
+            rawfile = await session.get(RawFile, parsed_rawfile_id)
+            if rawfile is not None:
+                rawfile.status = RawFileStatus.FAILED
+                rawfile.process_finished_at = datetime.now(timezone.utc)
+                rawfile.notes = f"Database failure: {exc}"
+                rawfile.dedupe_stats = asdict(stats)
+                await session.commit()
+        log.exception("ingestion_db_failure", rawfile_id=rawfile_id)
+        return {"status": "FAILED", "error": str(exc), "stats": asdict(stats)}
+    except IngestionError as exc:
+        stats.parser_failures += 1
+        async with AsyncSessionLocal() as session:
+            rawfile = await session.get(RawFile, parsed_rawfile_id)
+            if rawfile is not None:
+                rawfile.status = RawFileStatus.FAILED
+                rawfile.process_finished_at = datetime.now(timezone.utc)
+                rawfile.notes = str(exc)
+                rawfile.dedupe_stats = asdict(stats)
+                await session.commit()
+        log.exception("ingestion_parser_failure", rawfile_id=rawfile_id, error=str(exc))
+        return {"status": "FAILED", "error": str(exc), "stats": asdict(stats)}
+    except Exception as exc:  # noqa: BLE001
+        log.exception("ingestion_unhandled_failure", rawfile_id=rawfile_id)
+        from sqlalchemy import update
+        async with AsyncSessionLocal() as fallback_session:
+            await fallback_session.execute(
+                update(RawFile).where(RawFile.id == parsed_rawfile_id).values(status="FAILED", notes=f"Unhandled pipeline error: {exc}")
+            )
+            await fallback_session.commit()
+        return {"status": "FAILED", "error": str(exc), "stats": asdict(stats)}

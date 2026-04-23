@@ -5,6 +5,12 @@ from collections.abc import AsyncGenerator
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from backend.src.core.config import get_settings
+from backend.src.db.base import import_all_models
+
+# Ensure all models are registered in Base.metadata before any session is created.
+# This prevents NoReferencedTableError for FK references (e.g., raw_files.owner_id → users.id)
+# in worker processes that don't go through the Alembic env.py import path.
+import_all_models()
 
 
 settings = get_settings()
