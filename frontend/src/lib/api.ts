@@ -147,9 +147,8 @@ export const useTaskStatusQuery = (taskId?: string, enabled = true) =>
   })
 
 /**
- * Upload list — no automatic background polling.
- * The page can call `refetch()` explicitly after an upload completes,
- * or the user can navigate away and back to refresh.
+ * Upload list — polls while any upload is actively processing.
+ * Stops auto-refresh once all uploads reach a terminal state.
  */
 export const useUploadsQuery = () =>
   useQuery({
@@ -158,8 +157,16 @@ export const useUploadsQuery = () =>
       const { data } = await api.get('/ingest/uploads')
       return data.uploads as UploadSummary[]
     },
-    staleTime: 30_000,   // treat data fresh for 30 s
-    refetchOnWindowFocus: true, // refetch when user returns to tab
+    staleTime: 10_000,
+    refetchOnWindowFocus: true,
+    refetchInterval: (query) => {
+      // Keep polling while any upload is not in a terminal state
+      const uploads = query.state.data
+      if (!uploads) return 15_000
+      const hasActive = uploads.some(u => !u.progress.terminal)
+      return hasActive ? 8_000 : false
+    },
+    refetchIntervalInBackground: false,
   })
 
 /** Single upload detail — no polling; real-time updates come via SSE. */

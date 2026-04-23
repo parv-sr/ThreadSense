@@ -17,6 +17,16 @@ export default defineConfig({
         target: 'http://localhost:8000',
         changeOrigin: true,
         secure: false,
+        timeout: 0,          // disable socket timeout (SSE is long-lived)
+        proxyTimeout: 0,     // disable proxy timeout
+        configure: (proxy) => {
+          proxy.on('proxyRes', (proxyRes, req) => {
+            if (req.url?.endsWith('/stream')) {
+              proxyRes.headers['cache-control'] = 'no-cache'
+              proxyRes.headers['x-accel-buffering'] = 'no'
+            }
+          })
+        },
       },
       '/admin': {
         target: 'http://localhost:8000',

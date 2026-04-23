@@ -426,12 +426,35 @@ async def upload_detail_stream(rawfile_id: str, request: Request) -> StreamingRe
 
     async def event_generator() -> asyncio.AsyncIterator[str]:
         previous_payload: str | None = None
+        consecutive_errors = 0
+        MAX_CONSECUTIVE_ERRORS = 3
+
         while True:
             if await request.is_disconnected():
                 break
 
-            async with AsyncSessionLocal() as session:
-                payload = await _fetch_upload_detail_payload(session, parsed_id)
+            try:
+                async with AsyncSessionLocal() as session:
+                    payload = await _fetch_upload_detail_payload(session, parsed_id)
+                consecutive_errors = 0  # reset on success
+            except Exception as exc:
+                consecutive_errors += 1
+                log.error(
+                    "sse_generator_db_error",
+                    rawfile_id=rawfile_id,
+                    error=str(exc),
+                    attempt=consecutive_errors,
+                )
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                    yield _sse_frame("done", {
+                        "rawfileId": rawfile_id,
+                        "status": "FAILED",
+                        "error": "Stream interrupted due to server error",
+                        "streamedAt": datetime.now(timezone.utc).isoformat(),
+                    })
+                    break
+                await asyncio.sleep(2.5)
+                continue
 
             serialized_payload = json.dumps(payload, separators=(",", ":"))
             if serialized_payload != previous_payload:

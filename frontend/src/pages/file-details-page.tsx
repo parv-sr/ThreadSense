@@ -16,15 +16,25 @@ export const FileDetailsPage = () => {
     setLogLines(['Waiting for processing events...'])
   }, [rawfileId])
 
-  // Derive display values from stream snapshot or fallback to REST data
-  const status = streamState.snapshot?.status ?? detailData?.upload?.status ?? 'PENDING'
-  const progress = streamState.snapshot?.percentage ?? 8
-  const upload = detailData?.upload
+  // Derive display values from SSE snapshot → REST fallback, drilling into the correct nested structure
+  const status = streamState.snapshot?.upload?.progress?.status
+                 ?? detailData?.upload?.progress?.status
+                 ?? detailData?.upload?.status
+                 ?? 'PENDING'
+  const progress = streamState.snapshot?.upload?.progress?.percentage
+                   ?? detailData?.upload?.progress?.percentage
+                   ?? 8
+  const upload = streamState.snapshot?.upload ?? detailData?.upload
 
+  // Derive insights from SSE snapshot for real-time Section C updates
+  const insights = streamState.snapshot?.insights ?? detailData?.insights
+
+  // Drive log lines from the SSE snapshot's progress.message field
   useEffect(() => {
-    if (streamState.snapshot?.message) {
+    const msg = streamState.snapshot?.upload?.progress?.message
+    if (msg) {
       setLogLines(prev => {
-        const next = [...prev, streamState.snapshot.message]
+        const next = [...prev, msg]
         if (next.length > 100) return next.slice(next.length - 100)
         return next
       })
@@ -113,15 +123,22 @@ export const FileDetailsPage = () => {
       <Card className='p-5'>
         <p className='text-xs uppercase tracking-wider text-zinc-500'>Section C · Processed Data Summary</p>
         <div className='mt-4'>
-            {detailData?.insights ? (
+            {insights ? (
               <div className="space-y-4">
                 <div>
-                  <h3 className="text-zinc-100 font-semibold">{detailData.insights.headline}</h3>
-                  <p className="text-zinc-400 text-sm mt-1">{detailData.insights.subheadline}</p>
+                  <h3 className="text-zinc-100 font-semibold">{insights.headline}</h3>
+                  <p className="text-zinc-400 text-sm mt-1">{insights.subheadline}</p>
                 </div>
+                {insights.highlights && insights.highlights.length > 0 && (
+                  <ul className="space-y-1">
+                    {insights.highlights.map((h, i) => (
+                      <li key={i} className="text-sm text-zinc-300">• {h}</li>
+                    ))}
+                  </ul>
+                )}
                 <div className="flex gap-2">
                   <span className="bg-zinc-800 px-2 py-1 rounded text-xs text-zinc-300">
-                    {detailData.insights.status_summary}
+                    {insights.status_summary}
                   </span>
                 </div>
               </div>
