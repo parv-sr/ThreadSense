@@ -33,38 +33,37 @@ def extract_sources_from_reasoning(reasoning: str) -> list[str]:
 
 
 def render_table_html(rows: list[dict[str, Any]]) -> str:
-    """Render required output table and View Source button column."""
+    """Render the required listing table with clickable listing IDs."""
 
-    columns = ["BHK", "Price", "Location", "Contact Number", "Timestamp", "Sender", "Listing ID", "Source"]
+    columns = ["ID", "Transaction", "Property", "Location", "BHK", "Price"]
     header_html = "".join(f"<th>{column}</th>" for column in columns)
 
     row_html: list[str] = []
     for row in rows:
-        chunk_id = html.escape(str(row.get("chunk_id", "")))
-        listing_id = html.escape(str(row.get("listing_id", chunk_id)))
-        source_btn = (
+        listing_id = html.escape(str(row.get("listing_id", "")))
+        listing_button = (
             "<button "
             'type="button" '
-            "class=\"view-source-btn\" "
-            f'data-chunk-id="{chunk_id}" '
-            f"onclick=\"fetch('/chat/source/{chunk_id}').then(r => r.json()).then(data => window.dispatchEvent(new CustomEvent('threadsense:source', {{ detail: data }})))\""
-            ">View Source</button>"
+            "class=\"listing-source-link\" "
+            f'data-listing-id="{listing_id}"'
+            f">{listing_id}</button>"
         )
+        price = row.get("price")
+        if price is None and (row.get("price_min") is not None or row.get("price_max") is not None):
+            price = f"{row.get('price_min', 'N/A')} - {row.get('price_max', 'N/A')}"
 
         row_html.append(
             "<tr>"
-            f"<td>{html.escape(str(row.get('bhk', 'N/A')))}</td>"
-            f"<td>{html.escape(str(row.get('price', 'N/A')))}</td>"
+            f"<td>{listing_button}</td>"
+            f"<td>{html.escape(str(row.get('transaction_type', 'N/A')))}</td>"
+            f"<td>{html.escape(str(row.get('property_type', 'N/A')))}</td>"
             f"<td>{html.escape(str(row.get('location', 'N/A')))}</td>"
-            f"<td>{html.escape(str(row.get('contact_number', 'N/A')))}</td>"
-            f"<td>{html.escape(str(row.get('timestamp', 'N/A')))}</td>"
-            f"<td>{html.escape(str(row.get('sender', 'N/A')))}</td>"
-            f"<td>{listing_id}</td>"
-            f"<td>{source_btn}</td>"
+            f"<td>{html.escape(str(row.get('bhk', 'N/A')))}</td>"
+            f"<td>{html.escape(str(price or 'N/A'))}</td>"
             "</tr>"
         )
 
-    body = "".join(row_html) if row_html else "<tr><td colspan='8'>No listings found.</td></tr>"
+    body = "".join(row_html) if row_html else "<tr><td colspan='6'>No listings found.</td></tr>"
     return f"<table><thead><tr>{header_html}</tr></thead><tbody>{body}</tbody></table>"
 
 

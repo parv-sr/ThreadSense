@@ -5,149 +5,120 @@ from typing import Any
 
 import structlog
 from langchain_core.documents import Document
-from qdrant_client.models import FieldCondition, Filter, MatchText, MatchValue, Range
+from sqlalchemy import select
 
+from backend.src.db.session import AsyncSessionLocal
+from backend.src.embeddings.service import EmbeddingService
+from backend.src.models.preprocessing import ListingChunk, PropertyListing
 from backend.src.rag.query_parser import parse_query_constraints
 
 logger = structlog.get_logger(__name__)
 
 
-class HybridQdrantRetriever:
-    """ThreadSense hybrid retriever for dense+sparse Qdrant queries with metadata filters."""
+def normalize_location(text: str | None) -> str | None:
+    if not text:
+        return None
+    normalized = str(text).lower()
+    normalized = normalized.replace(" west", " w").replace(" east", " e")
+    normalized = normalized.replace("w.", "w").replace("e.", "e")
+    normalized = re.sub(r"[^a-z0-9 ]+", " ", normalized)
+    normalized = " ".join(normalized.split())
+    aliases = {
+        "bandra w": "bandra west",
+        "bandra west": "bandra west",
+        "bandra e": "bandra east",
+        "khar w": "khar west",
+        "khar west": "khar west",
+        "khar e": "khar east",
+        "bkc": "bkc",
+    }
+    return aliases.get(normalized, normalized) or None
 
-    def __init__(self, vector_store: Any) -> None:
-        self.vector_store = vector_store
+
+class PgvectorListingRetriever:
+    """PostgreSQL/pgvector retriever with SQL filters applied before vector ordering."""
+
+    def __init__(self, embedding_service: EmbeddingService | None = None) -> None:
+        self.embedding_service = embedding_service or EmbeddingService()
 
     @staticmethod
-    def _build_filter(filters: dict[str, Any] | None) -> Filter | None:
-        """Translate API filters into Qdrant filter syntax."""
-
+    def _apply_filters(stmt, filters: dict[str, Any] | None):
         if not filters:
-            return None
-
-        must: list[FieldCondition] = []
+            return stmt
 
         if bhk := filters.get("bhk"):
-            must.append(FieldCondition(key="bhk", range=Range(gte=float(bhk), lte=float(bhk))))
-        if location := filters.get("location"):
-            must.append(FieldCondition(key="location", match=MatchText(text=str(location))))
+            stmt = stmt.where(PropertyListing.bhk == float(bhk))
+        if filters.get("bhk_min") is not None:
+            stmt = stmt.where(PropertyListing.bhk >= float(filters["bhk_min"]))
+        if filters.get("bhk_max") is not None:
+            stmt = stmt.where(PropertyListing.bhk <= float(filters["bhk_max"]))
+
+        location = normalize_location(filters.get("location"))
+        if location:
+            stmt = stmt.where(PropertyListing.canonical_location == location)
+
         if sender := filters.get("sender"):
-            must.append(FieldCondition(key="sender", match=MatchText(text=str(sender))))
+            stmt = stmt.where(PropertyListing.sender.ilike(f"%{sender}%"))
         if listing_id := filters.get("listing_id"):
-            must.append(FieldCondition(key="listing_id", match=MatchValue(value=str(listing_id))))
+            stmt = stmt.where(PropertyListing.id == listing_id)
         if transaction_type := filters.get("transaction_type"):
-            must.append(
-                FieldCondition(
-                    key="transaction_type",
-                    match=MatchValue(value=str(transaction_type).upper()),
-                )
-            )
+            stmt = stmt.where(PropertyListing.transaction_type == str(transaction_type).upper())
         if property_type := filters.get("property_type"):
-            must.append(
-                FieldCondition(
-                    key="property_type",
-                    match=MatchValue(value=str(property_type).upper()),
-                )
-            )
+            stmt = stmt.where(PropertyListing.property_type == str(property_type).upper())
         if listing_intent := filters.get("listing_intent"):
-            must.append(
-                FieldCondition(
-                    key="listing_intent",
-                    match=MatchValue(value=str(listing_intent).upper()),
-                )
-            )
+            stmt = stmt.where(PropertyListing.listing_intent == str(listing_intent).upper())
 
-        min_price = filters.get("min_price")
-        max_price = filters.get("max_price")
-        if min_price is not None or max_price is not None:
-            must.append(
-                FieldCondition(
-                    key="price",
-                    range=Range(
-                        gte=float(min_price) if min_price is not None else None,
-                        lte=float(max_price) if max_price is not None else None,
-                    ),
-                )
-            )
+        min_price = filters.get("min_price") if filters.get("min_price") is not None else filters.get("price_min")
+        max_price = filters.get("max_price") if filters.get("max_price") is not None else filters.get("price_max")
+        if min_price is not None:
+            stmt = stmt.where(PropertyListing.price_min >= int(min_price))
+        if max_price is not None:
+            stmt = stmt.where(PropertyListing.price_max <= int(max_price))
 
-        built_filter: Filter | None = Filter(must=must) if must else None
-        serialized_filter: dict[str, Any] | None = (
-            built_filter.model_dump(mode="json", exclude_none=True) if built_filter is not None else None
-        )
-        logger.debug("hybrid_filter_built", filters=filters, qdrant_filter=serialized_filter)
-        return built_filter
+        area_min = filters.get("area_min") if filters.get("area_min") is not None else filters.get("min_sqft")
+        area_max = filters.get("area_max") if filters.get("area_max") is not None else filters.get("max_sqft")
+        if area_min is not None:
+            stmt = stmt.where(PropertyListing.sqft >= int(area_min))
+        if area_max is not None:
+            stmt = stmt.where(PropertyListing.sqft <= int(area_max))
 
-    async def retrieve(
-        self,
-        query: str,
-        *,
-        filters: dict[str, Any] | None = None,
-        parsed_filters: dict[str, Any] | None = None,
-        qdrant_filter: Filter | None = None,
-        limit: int = 20,
-    ) -> list[Document]:
-        """Perform dense retrieval + lexical reranking with optional parsed query filters."""
+        if furnishing := filters.get("furnishing"):
+            stmt = stmt.where(PropertyListing.furnishing == str(furnishing).upper().replace("_", "-"))
 
-        constraints = parse_query_constraints(query) if parsed_filters is None else None
-        merged_filters: dict[str, Any] = (
-            dict(parsed_filters)
-            if parsed_filters is not None
-            else {**(constraints.filters if constraints is not None else {}), **(filters or {})}
-        )
-        parsed_filter: Filter | None = self._build_filter(merged_filters or None)
-        q_filter: Filter | None = self._merge_filters(parsed_filter, qdrant_filter)
-        serialized_q_filter: dict[str, Any] | None = (
-            q_filter.model_dump(mode="json", exclude_none=True) if q_filter is not None else None
-        )
-        normalized_query: str = constraints.normalized_query if constraints is not None else query
-        parsed_constraints: dict[str, Any] | None = constraints.filters if constraints is not None else None
-        logger.info(
-            "hybrid_retrieval_start",
-            query=query,
-            normalized_query=normalized_query,
-            parsed_filters=parsed_constraints,
-            filters=merged_filters or None,
-            merged_qdrant_filter=serialized_q_filter,
-            limit=limit,
-        )
-
-        retriever = self.vector_store.as_retriever(
-            search_type="similarity",
-            search_kwargs={"k": max(limit * 3, 40), "filter": q_filter},
-        )
-        docs = await retriever.ainvoke(normalized_query or query)
-        reranked_docs = self._lexical_rerank(
-            docs=list(docs),
-            query=normalized_query or query,
-            parsed_filters=merged_filters,
-            top_k=limit,
-        )
-
-        first_candidate_metadata: dict[str, Any] | None = dict(docs[0].metadata or {}) if docs else None
-        logger.info(
-            "hybrid_retrieval_done",
-            count=len(reranked_docs),
-            candidate_count=len(docs),
-            first_candidate_metadata=first_candidate_metadata,
-        )
-        return reranked_docs
-
+        return stmt
 
     @staticmethod
-    def _merge_filters(parsed_filter: Filter | None, external_filter: Filter | None) -> Filter | None:
-        """Combine parsed query filters with deterministic graph-provided hard filters."""
-
-        if parsed_filter is None:
-            return external_filter
-        if external_filter is None:
-            return parsed_filter
-
-        must: list[Any] = []
-        if parsed_filter.must:
-            must.extend(parsed_filter.must)
-        if external_filter.must:
-            must.extend(external_filter.must)
-        return Filter(must=must) if must else None
+    def _to_document(listing: PropertyListing, chunk: ListingChunk, distance: float | None = None) -> Document:
+        metadata = {
+            "listing_id": str(listing.id),
+            "chunk_id": str(listing.raw_chunk_id),
+            "listing_chunk_id": str(chunk.id),
+            "transaction_type": getattr(listing.transaction_type, "value", str(listing.transaction_type)),
+            "property_type": getattr(listing.property_type, "value", str(listing.property_type)),
+            "listing_intent": getattr(listing.listing_intent, "value", str(listing.listing_intent)),
+            "price": listing.price,
+            "price_min": listing.price_min,
+            "price_max": listing.price_max,
+            "price_status": getattr(listing.price_status, "value", str(listing.price_status)),
+            "bhk": listing.bhk,
+            "sqft": listing.sqft,
+            "location": listing.location,
+            "canonical_location": listing.canonical_location,
+            "furnishing": getattr(listing.furnishing, "value", str(listing.furnishing))
+            if listing.furnishing is not None
+            else None,
+            "pets_allowed": listing.pets_allowed,
+            "sender": listing.sender,
+            "timestamp": listing.timestamp.isoformat() if listing.timestamp else None,
+            "contact_number": listing.contact_number,
+            "landmark": listing.landmark,
+            "floor_number": listing.floor_number,
+            "total_floors": listing.total_floors,
+            "is_verified": listing.is_verified,
+            "confidence_score": listing.confidence_score,
+            "semantic_distance": distance,
+        }
+        return Document(page_content=chunk.content, metadata=metadata)
 
     @staticmethod
     def _lexical_rerank(
@@ -159,27 +130,23 @@ class HybridQdrantRetriever:
     ) -> list[Document]:
         tokens: list[str] = [token for token in re.split(r"\W+", query.lower()) if len(token) > 2]
         weighted: list[tuple[float, Document]] = []
-
         for rank_index, doc in enumerate(docs):
             metadata: dict[str, Any] = doc.metadata or {}
-            haystack: str = " ".join(
+            haystack = " ".join(
                 [
                     str(doc.page_content or ""),
                     str(metadata.get("location") or ""),
                     str(metadata.get("property_type") or ""),
                     str(metadata.get("transaction_type") or ""),
-                    str(metadata.get("content") or ""),
                 ]
             ).lower()
-
-            lexical_hits: int = sum(1 for token in tokens if token in haystack)
-            lexical_score: float = lexical_hits / max(1, len(tokens))
-            dense_prior: float = 1.0 / (1.0 + rank_index)
-            filter_bonus: float = 0.0
-
+            lexical_score = sum(1 for token in tokens if token in haystack) / max(1, len(tokens))
+            vector_prior = 1.0 / (1.0 + rank_index)
+            filter_bonus = 0.0
             if parsed_filters.get("location") is not None:
-                location_value: str = str(metadata.get("location") or "").lower()
-                if str(parsed_filters["location"]).lower() in location_value:
+                location_value = normalize_location(str(metadata.get("location") or ""))
+                expected = normalize_location(str(parsed_filters["location"]))
+                if expected and location_value and expected in location_value:
                     filter_bonus += 0.20
             if parsed_filters.get("bhk") is not None:
                 try:
@@ -187,20 +154,44 @@ class HybridQdrantRetriever:
                         filter_bonus += 0.20
                 except (TypeError, ValueError):
                     pass
-            if parsed_filters.get("transaction_type") is not None:
-                if str(metadata.get("transaction_type") or "").upper() == str(parsed_filters["transaction_type"]).upper():
-                    filter_bonus += 0.15
-            if parsed_filters.get("property_type") is not None:
-                if str(metadata.get("property_type") or "").upper() == str(parsed_filters["property_type"]).upper():
-                    filter_bonus += 0.10
-
-            final_score: float = (dense_prior * 0.45) + (lexical_score * 0.45) + filter_bonus
-            weighted.append((final_score, doc))
-
+            weighted.append(((vector_prior * 0.35) + (lexical_score * 0.45) + filter_bonus, doc))
         weighted.sort(key=lambda item: item[0], reverse=True)
-        top_ids: list[str] = [
-            str((doc.metadata or {}).get("listing_id") or (doc.metadata or {}).get("chunk_id") or "")
-            for _, doc in weighted[:top_k]
-        ]
-        logger.debug("hybrid_lexical_rerank_complete", tokens=tokens, top_k=top_k, top_listing_ids=top_ids)
         return [doc for _, doc in weighted[:top_k]]
+
+    async def retrieve(
+        self,
+        query: str,
+        *,
+        filters: dict[str, Any] | None = None,
+        parsed_filters: dict[str, Any] | None = None,
+        limit: int = 20,
+    ) -> list[Document]:
+        constraints = parse_query_constraints(query) if parsed_filters is None else None
+        merged_filters: dict[str, Any] = (
+            dict(parsed_filters)
+            if parsed_filters is not None
+            else {**(constraints.filters if constraints is not None else {}), **(filters or {})}
+        )
+        normalized_query = constraints.normalized_query if constraints is not None else query
+
+        query_embedding = await self.embedding_service.embed_text(normalized_query or query)
+        distance = ListingChunk.embedding.cosine_distance(query_embedding).label("semantic_distance")
+        stmt = (
+            select(PropertyListing, ListingChunk, distance)
+            .join(ListingChunk, ListingChunk.property_listing_id == PropertyListing.id)
+            .where(ListingChunk.embedding.is_not(None))
+        )
+        stmt = self._apply_filters(stmt, merged_filters)
+        stmt = stmt.order_by(distance).limit(max(1, limit))
+
+        async with AsyncSessionLocal() as session:
+            rows = (await session.execute(stmt)).all()
+
+        docs = [self._to_document(listing, chunk, float(dist)) for listing, chunk, dist in rows]
+        logger.info(
+            "pgvector_retrieval_done",
+            count=len(docs),
+            filters=merged_filters or None,
+            limit=limit,
+        )
+        return docs

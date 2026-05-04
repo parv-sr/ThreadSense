@@ -29,6 +29,7 @@ class ChatResponse(RAGResponse):
 class SourceResponse(BaseModel):
     """Full raw source chunk details for View Source actions."""
 
+    listing_id: str
     chunk_id: str
     message_start: datetime | None
     sender: str | None

@@ -35,7 +35,7 @@ export const SourceViewerModal = ({
           </div>
         ) : source ? (
           <div className='space-y-3 text-sm'>
-            <div className='w-full rounded-2xl rounded-bl-sm border border-emerald-700/70 bg-emerald-600/90 p-4 text-emerald-50 shadow-md'>
+            <div className='w-full rounded-md border border-emerald-700/70 bg-emerald-600/90 p-4 text-emerald-50 shadow-md'>
               <p className='mb-2 text-xs uppercase tracking-wider text-emerald-100/90'>WhatsApp Source Bubble</p>
               <pre className='font-mono-data max-h-[42vh] overflow-auto whitespace-pre-wrap text-[13px] leading-relaxed'>
                 {source.raw_text}
@@ -45,9 +45,12 @@ export const SourceViewerModal = ({
                   Sender: <span className='font-semibold'>{source.sender ?? 'Unknown'}</span>
                 </p>
                 <p>
-                  Timestamp:{' '}
+                  Listing ID: <span className='font-semibold'>{source.listing_id}</span>
+                </p>
+                <p>
+                  Message time:{' '}
                   <span className='font-semibold'>
-                    {source.created_at ? format(new Date(source.created_at), 'PPpp') : 'Unavailable'}
+                    {source.message_start ? format(new Date(source.message_start), 'PPpp') : 'Unavailable'}
                   </span>
                 </p>
               </div>

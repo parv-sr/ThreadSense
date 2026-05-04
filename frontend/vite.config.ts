@@ -7,18 +7,12 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // Using Vite proxy so we don't need CORS in development.
-      '/chat': {
+      '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
         secure: false,
-      },
-      '/ingest': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-        secure: false,
-        timeout: 0,          // disable socket timeout (SSE is long-lived)
-        proxyTimeout: 0,     // disable proxy timeout
+        timeout: 0,
+        proxyTimeout: 0,
         configure: (proxy) => {
           proxy.on('proxyRes', (proxyRes, req) => {
             if (req.url?.endsWith('/stream')) {
@@ -27,16 +21,6 @@ export default defineConfig({
             }
           })
         },
-      },
-      '/admin': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-        secure: false,
-      },
-      '/truncate-db': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-        secure: false,
       },
 
     },

@@ -6,7 +6,6 @@ from typing import Any, TypedDict
 import structlog
 from langgraph.checkpoint.redis.aio import AsyncRedisSaver
 from langgraph.graph import END, START, StateGraph
-from qdrant_client.models import Filter
 
 from backend.src.core.config import get_settings
 from backend.src.rag.nodes import (
@@ -19,7 +18,7 @@ from backend.src.rag.nodes import (
 from backend.src.schemas.rag import AnswerWithSources, GradedListing, ParsedQuery
 
 settings = get_settings()
-logger = structlog.get_logger(__name__)
+log = structlog.get_logger(__name__)
 
 
 class RAGState(TypedDict):
@@ -27,14 +26,14 @@ class RAGState(TypedDict):
 
     query: str
     parsed_query: ParsedQuery | None
-    qdrant_filter: Filter | None
+    hard_filters: dict[str, Any]
     retrieved_listings: list[Any]
     graded_listings: list[GradedListing]
     final_answer: AnswerWithSources | None
     thread_id: str
 
 
-# Deterministic pipeline: parse -> hard filter build -> retrieve -> grade -> answer.
+# Build the deterministic pipeline: parse -> filter -> retrieve -> grade -> answer.
 _graph_builder: StateGraph[RAGState] = StateGraph(RAGState)
 _graph_builder.add_node("parser", query_parser_node)
 _graph_builder.add_node("filter_builder", build_hard_filter_node)
@@ -48,27 +47,20 @@ _graph_builder.add_edge("filter_builder", "retrieval")
 _graph_builder.add_edge("retrieval", "grader")
 _graph_builder.add_edge("grader", "final_answer")
 _graph_builder.add_edge("final_answer", END)
-logger.info(
-    "rag_graph_compiled_structure",
-    nodes=["parser", "filter_builder", "retrieval", "grader", "final_answer"],
-    edges=[
-        "START->parser",
-        "parser->filter_builder",
-        "filter_builder->retrieval",
-        "retrieval->grader",
-        "grader->final_answer",
-        "final_answer->END",
-    ],
-)
 
 # Redis checkpointer persists thread state across worker processes.
 _checkpointer: AsyncRedisSaver | None
 try:
     _checkpointer = AsyncRedisSaver(redis_url=settings.redis_broker_url)
-    asyncio.run(_checkpointer.asetup())
+    coro = _checkpointer.asetup()
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(coro)
+    except RuntimeError:
+        asyncio.run(coro)
 except Exception as exc:  # noqa: BLE001
-    logger.warning("rag_redis_checkpointer_unavailable", error=str(exc))
+    log.warning("rag_checkpointer_unavailable", error=str(exc))
     _checkpointer = None
 
 rag_app = _graph_builder.compile(checkpointer=_checkpointer)
-logger.info("rag_graph_ready", checkpointer_enabled=_checkpointer is not None)
+log.info("rag_graph_ready", checkpointer=_checkpointer is not None)

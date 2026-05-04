@@ -91,26 +91,39 @@ async def _existing_hashes_stmt(owner_id: uuid.UUID | None) -> Select[tuple[str,
     return stmt
 
 
-@broker.task
+async def _heartbeat(rawfile_id_: uuid.UUID) -> None:
+    """Update last_heartbeat_at to signal the task is still alive."""
+    async with AsyncSessionLocal() as _session:
+        rf = await _session.get(RawFile, rawfile_id_)
+        if rf is not None:
+            rf.last_heartbeat_at = datetime.now(timezone.utc)
+            await _session.commit()
+
+
+@broker.task(
+    retry_on_error=True,
+    max_retries=3,
+    delay=30,
+    use_delay_exponent=True,
+    max_delay_exponent=300,
+)
 async def ingest_raw_file_task(rawfile_id: str) -> dict[str, Any]:
     stats = DedupeStats()
     started_at = datetime.now(timezone.utc)
-    log.info("ingestion_task_started", rawfile_id=rawfile_id, started_at=started_at.isoformat())
+    _log = log.bind(rawfile_id=rawfile_id)
+    _log.info("ingestion_started")
 
     try:
         parsed_rawfile_id = uuid.UUID(rawfile_id)
     except ValueError as exc:
         return {"status": "FAILED", "error": f"Invalid rawfile_id: {exc}", "stats": asdict(stats)}
 
-    # ---------------------------------------------------------------
-    # Phase 0: Load metadata and mark PROCESSING (short-lived session)
-    # ---------------------------------------------------------------
+    # ── Phase 1: Load metadata & mark PROCESSING ─────────────────────────
     async with AsyncSessionLocal() as session:
         rawfile = await session.get(RawFile, parsed_rawfile_id)
         if rawfile is None:
             return {"status": "FAILED", "error": "RawFile not found", "stats": asdict(stats)}
 
-        # Capture scalar values we need across session boundaries
         rf_id = rawfile.id
         rf_file_name = rawfile.file_name
         rf_content = rawfile.content or ""
@@ -119,12 +132,13 @@ async def ingest_raw_file_task(rawfile_id: str) -> dict[str, Any]:
 
         rawfile.status = RawFileStatus.PROCESSING
         rawfile.process_started_at = started_at
+        rawfile.last_heartbeat_at = started_at
         await session.commit()
-        log.info("ingestion_rawfile_loaded", rawfile_id=str(rf_id), filename=rf_file_name)
+        _log.info("phase_1_loaded", filename=rf_file_name)
 
-    # ---------------------------------------------------------------
-    # Phase 1: Read file content (no session needed, CPU/IO bound)
-    # ---------------------------------------------------------------
+    await _heartbeat(parsed_rawfile_id)
+
+    # ── Phase 2: Read & parse file ────────────────────────────────────────
     try:
         content = rf_content
         if not content.strip() and rf_file:
@@ -145,12 +159,9 @@ async def ingest_raw_file_task(rawfile_id: str) -> dict[str, Any]:
                 rawfile.notes = "No valid messages."
                 rawfile.dedupe_stats = asdict(stats)
                 await session.commit()
-            log.info("ingestion_empty_upload_completed", rawfile_id=str(rf_id))
+            _log.info("ingestion_completed", result="empty_upload")
             return {"status": "COMPLETED", "rawfile_id": rawfile_id, "stats": asdict(stats)}
 
-        # ---------------------------------------------------------------
-        # Phase 2: Parse with Rust parser (CPU-bound, no session)
-        # ---------------------------------------------------------------
         try:
             import whatsapp_parser  # type: ignore
         except Exception as exc:  # noqa: BLE001
@@ -168,12 +179,6 @@ async def ingest_raw_file_task(rawfile_id: str) -> dict[str, Any]:
                         parsed_rows = whatsapp_parser.parse_file(rf_file)
                     except Exception as file_exc:  # noqa: BLE001
                         if content.strip():
-                            log.warning(
-                                "ingestion_parse_file_fallback_to_text",
-                                rawfile_id=str(rf_id),
-                                file_path=rf_file,
-                                error=str(file_exc),
-                            )
                             parsed_rows = whatsapp_parser.parse_text(content)
                         else:
                             raise
@@ -186,18 +191,15 @@ async def ingest_raw_file_task(rawfile_id: str) -> dict[str, Any]:
 
         stats.total_messages = len(parsed_rows)
 
-        # Update progress in a short-lived session
         async with AsyncSessionLocal() as session:
             rawfile = await session.get(RawFile, parsed_rawfile_id)
             rawfile.progress_percentage = 25
             await session.commit()
-        log.info("ingestion_parsed_rows", rawfile_id=str(rf_id), total_messages=stats.total_messages)
+        _log.info("phase_2_parsed", total_messages=stats.total_messages)
 
-        # ---------------------------------------------------------------
-        # Phase 3: In-memory deduplication (no session needed)
-        # ---------------------------------------------------------------
+        await _heartbeat(parsed_rawfile_id)
 
-        # 1) in-chat dedupe and parser/system filtering
+        # ── Phase 3: In-memory deduplication ──────────────────────────────
         local_seen: set[str] = set()
         stage_one: list[dict[str, Any]] = []
         for row in parsed_rows:
@@ -246,7 +248,7 @@ async def ingest_raw_file_task(rawfile_id: str) -> dict[str, Any]:
                 }
             )
 
-        # 2) in-batch dedupe
+        # Batch dedupe
         batch_seen: set[str] = set()
         stage_two: list[dict[str, Any]] = []
         for item in stage_one:
@@ -256,25 +258,23 @@ async def ingest_raw_file_task(rawfile_id: str) -> dict[str, Any]:
                 continue
             batch_seen.add(item["dedupe_hash"])
             stage_two.append(item)
-        log.info(
-            "ingestion_stage_dedupe_summary",
-            rawfile_id=str(rf_id),
-            stage_one_count=len(stage_one),
-            stage_two_count=len(stage_two),
-            local_duplicates=stats.local_duplicates,
-            batch_duplicates=stats.batch_duplicates,
+
+        _log.info(
+            "phase_3_deduped",
+            candidates=len(stage_one),
+            unique=len(stage_two),
+            local_dupes=stats.local_duplicates,
+            batch_dupes=stats.batch_duplicates,
         )
 
-        # ---------------------------------------------------------------
-        # Phase 4: DB dedupe + insert chunks (new short-lived session)
-        # ---------------------------------------------------------------
+        await _heartbeat(parsed_rawfile_id)
+
+        # ── Phase 4: DB dedupe & persist chunks ───────────────────────────
         async with AsyncSessionLocal() as session:
-            # 3) in-db dedupe
             existing_hashes: set[str] = set()
             stmt = await _existing_hashes_stmt(rf_owner_id)
             for cleaned_text, sender in (await session.execute(stmt)).all():
                 existing_hashes.add(_normalize_for_hash(cleaned_text or "", sender))
-            log.info("ingestion_db_hashes_loaded", rawfile_id=str(rf_id), existing_hash_count=len(existing_hashes))
 
             final_rows: list[RawMessageChunk] = []
             for item in stage_two:
@@ -309,15 +309,7 @@ async def ingest_raw_file_task(rawfile_id: str) -> dict[str, Any]:
             stats.created_chunks = len(final_rows)
             stats.final_unique_chunks = len(final_rows)
             stats.finalize()
-            log.info(
-                "ingestion_final_rows_prepared",
-                rawfile_id=str(rf_id),
-                created_chunks=stats.created_chunks,
-                db_duplicates=stats.db_duplicates,
-                duplicates_removed=stats.duplicates_removed,
-            )
 
-            # Re-fetch rawfile in this session to update final status
             rawfile = await session.get(RawFile, parsed_rawfile_id)
             rawfile.status = RawFileStatus.COMPLETED
             rawfile.processed = True
@@ -327,30 +319,32 @@ async def ingest_raw_file_task(rawfile_id: str) -> dict[str, Any]:
             rawfile.progress_percentage = 50
 
             await session.commit()
-            log.info(
-                "ingestion_completed",
-                rawfile_id=str(rf_id),
+            _log.info(
+                "phase_4_stored",
                 created=stats.created_chunks,
-                ignored=stats.ignored_chunks,
+                db_dupes=stats.db_duplicates,
+                total_ignored=stats.ignored_chunks,
             )
 
-        # ---------------------------------------------------------------
-        # Phase 5: Chain preprocessing worker
-        # ---------------------------------------------------------------
+        await _heartbeat(parsed_rawfile_id)
+
+        # ── Phase 5: Chain preprocessing ──────────────────────────────────
         if stats.created_chunks > 0:
             from backend.src.preprocessing.tasks import preprocess_rawfile_task  # noqa: PLC0415
 
             try:
                 await preprocess_rawfile_task.kiq(str(rf_id))
-                log.info("preprocess_enqueued", rawfile_id=str(rf_id))
+                _log.info("phase_5_preprocessing_queued")
             except Exception as chain_exc:  # noqa: BLE001
                 # Non-fatal — ingestion succeeded; extraction can be retried manually
-                log.warning(
-                    "preprocess_enqueue_failed",
-                    rawfile_id=str(rf_id),
-                    error=str(chain_exc),
-                )
+                _log.warning("phase_5_preprocessing_queue_failed", error=str(chain_exc))
 
+        _log.info(
+            "ingestion_completed",
+            created=stats.created_chunks,
+            ignored=stats.ignored_chunks,
+            total_messages=stats.total_messages,
+        )
         return {
             "status": "COMPLETED",
             "rawfile_id": str(rf_id),
@@ -369,7 +363,7 @@ async def ingest_raw_file_task(rawfile_id: str) -> dict[str, Any]:
                 rawfile.notes = f"Database failure: {exc}"
                 rawfile.dedupe_stats = asdict(stats)
                 await session.commit()
-        log.exception("ingestion_db_failure", rawfile_id=rawfile_id)
+        _log.exception("ingestion_failed", reason="database_error")
         return {"status": "FAILED", "error": str(exc), "stats": asdict(stats)}
     except IngestionError as exc:
         stats.parser_failures += 1
@@ -381,10 +375,10 @@ async def ingest_raw_file_task(rawfile_id: str) -> dict[str, Any]:
                 rawfile.notes = str(exc)
                 rawfile.dedupe_stats = asdict(stats)
                 await session.commit()
-        log.exception("ingestion_parser_failure", rawfile_id=rawfile_id, error=str(exc))
+        _log.exception("ingestion_failed", reason="parser_error", error=str(exc))
         return {"status": "FAILED", "error": str(exc), "stats": asdict(stats)}
     except Exception as exc:  # noqa: BLE001
-        log.exception("ingestion_unhandled_failure", rawfile_id=rawfile_id)
+        _log.exception("ingestion_failed", reason="unhandled_error")
         from sqlalchemy import update
         async with AsyncSessionLocal() as fallback_session:
             await fallback_session.execute(

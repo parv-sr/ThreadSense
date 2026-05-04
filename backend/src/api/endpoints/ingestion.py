@@ -292,8 +292,8 @@ async def _fetch_upload_detail_payload(session: AsyncSession, rawfile_id: UUID) 
                 "location": listing.location,
                 "price": listing.price,
                 "bhk": listing.bhk,
-                "areaSqft": listing.area_sqft,
-                "furnished": str(listing.furnished) if listing.furnished is not None else None,
+                "areaSqft": listing.sqft,
+                "furnished": str(listing.furnishing) if listing.furnishing is not None else None,
                 "landmark": listing.landmark,
                 "contactNumber": listing.contact_number,
                 "isVerified": bool(listing.is_verified),
@@ -324,12 +324,11 @@ async def ingest_file(
 ) -> dict[str, str]:
     filename = file.filename or "upload.txt"
     suffix = Path(filename).suffix.lower()
-    log.info("ingest_request_received", filename=filename, suffix=suffix)
     if suffix not in {".txt", ".zip", ".rar"}:
         raise HTTPException(status_code=400, detail="Only .txt, .zip, .rar files are supported")
 
     payload = await file.read()
-    log.info("ingest_payload_loaded", filename=filename, payload_bytes=len(payload))
+    log.info("upload_received", filename=filename, size_bytes=len(payload))
     if not payload:
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
     if len(payload) > settings.ingest_max_bytes:
@@ -347,7 +346,7 @@ async def ingest_file(
     )
     existing_id = duplicate_q.scalar_one_or_none()
     if existing_id:
-        log.info("ingest_duplicate_detected", filename=filename, existing_rawfile_id=str(existing_id))
+        log.info("upload_duplicate", filename=filename, existing_id=str(existing_id))
         return {"task_id": "", "rawfile_id": str(existing_id), "status": "ALREADY_EXISTS"}
 
     UPLOAD_ROOT.mkdir(parents=True, exist_ok=True)
@@ -373,13 +372,12 @@ async def ingest_file(
     session.add(rawfile)
     await session.commit()
     await session.refresh(rawfile)
-    log.info("ingest_rawfile_created", rawfile_id=str(rawfile.id), stored_path=str(stored_path))
 
     task = await ingest_raw_file_task.kiq(str(rawfile.id))
     rawfile.notes = f"{rawfile.notes or ''}; task_id={task.task_id}".strip("; ")
     session.add(rawfile)
     await session.commit()
-    log.info("ingest_queued", rawfile_id=str(rawfile.id), task_id=task.task_id)
+    log.info("upload_queued", rawfile_id=str(rawfile.id), task_id=task.task_id, filename=filename)
     return {"task_id": task.task_id, "rawfile_id": str(rawfile.id), "status": "QUEUED"}
 
 
@@ -396,6 +394,32 @@ async def upload_detail(rawfile_id: str, session: AsyncSession = Depends(get_db_
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="rawfile_id must be a valid UUID") from exc
     return await _fetch_upload_detail_payload(session, parsed_id)
+
+
+@router.delete("/uploads/{rawfile_id}")
+async def delete_upload(rawfile_id: str, session: AsyncSession = Depends(get_db_session)) -> dict[str, object]:
+    try:
+        parsed_id = UUID(rawfile_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="rawfile_id must be a valid UUID") from exc
+
+    rawfile = await session.get(RawFile, parsed_id)
+    if rawfile is None:
+        raise HTTPException(status_code=404, detail="Upload not found")
+
+    # Delete physical file from disk
+    stored_path = Path(rawfile.file) if rawfile.file else None
+    if stored_path and stored_path.exists():
+        try:
+            stored_path.unlink()
+        except OSError:
+            pass  # best-effort cleanup
+
+    # Cascade deletes: RawFile → RawMessageChunk → PropertyListing → ListingChunk
+    await session.delete(rawfile)
+    await session.commit()
+    log.info("upload_deleted", rawfile_id=rawfile_id, filename=rawfile.file_name)
+    return {"deleted": True, "rawfileId": rawfile_id, "fileName": rawfile.file_name}
 
 
 @router.get("/uploads/{rawfile_id}/progress")

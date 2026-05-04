@@ -56,10 +56,10 @@ export const ChatPage = () => {
   }
 
   return (
-    <section className='flex h-[calc(100vh-160px)] min-h-[620px] flex-col gap-4'>
+    <section className='flex h-[calc(100vh-88px)] min-h-[620px] flex-col gap-4'>
       <div className='flex flex-wrap items-center justify-between gap-3'>
         <div>
-          <h1 className='text-2xl font-semibold tracking-tight'>Chat Workspace</h1>
+          <h1 className='text-2xl font-semibold'>AI Assistant</h1>
           <p className='font-mono-data text-sm text-zinc-400'>Thread ID: {threadId}</p>
         </div>
         <Button
@@ -78,10 +78,7 @@ export const ChatPage = () => {
         <div ref={scrollRef} className='h-full space-y-4 overflow-y-auto p-4'>
           {messages.length === 0 ? (
             <div className='grid h-full place-items-center text-center text-zinc-400'>
-              <div className='max-w-lg'>
-                <p className='mb-2 text-lg text-zinc-100'>Welcome to ThreadSense</p>
-                <p>Ask your first question to generate structured insights from WhatsApp thread data.</p>
-              </div>
+              <p className='max-w-lg'>Ask comparative or exploratory questions about the structured inventory.</p>
             </div>
           ) : (
             messages.map((msg) => (
@@ -119,7 +116,7 @@ export const ChatPage = () => {
         onOpenChange={setOpenSource}
         source={sourceQuery.data}
         loading={sourceQuery.isLoading}
-        error={sourceQuery.isError ? 'Could not load source from /chat/source/{chunk_id}.' : undefined}
+        error={sourceQuery.isError ? 'Could not load the raw WhatsApp source for this listing.' : undefined}
       />
     </section>
   )

@@ -73,6 +73,7 @@ export interface ChatPayload {
 
 // Corresponds to: POST /chat/ response
 export interface ChatResponse {
+  thread_id: string
   table_html: string
   reasoning: string
   sources: string[]
@@ -85,8 +86,68 @@ export interface IngestResponse {
   status: 'QUEUED' | 'ALREADY_EXISTS' | string
 }
 
-// Corresponds to: GET /chat/source/{chunkId} response
+export interface ListingResult {
+  id: string
+  transaction_type: string
+  property_type: string
+  listing_intent: string
+  price: number | null
+  price_min: number | null
+  price_max: number | null
+  price_status: string
+  bhk: number | null
+  sqft: number | null
+  location: string | null
+  canonical_location: string | null
+  furnishing: string | null
+  pets_allowed: boolean | null
+  suspicious_flags: string[]
+  confidence_score: number
+  sender: string | null
+  timestamp: string | null
+  contact_number: string | null
+  semantic_score: number | null
+}
+
+export interface ListingsResponse {
+  items: ListingResult[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export interface FacetBucket {
+  value: string
+  count: number
+}
+
+export interface ListingFacets {
+  transaction_type: FacetBucket[]
+  property_type: FacetBucket[]
+  canonical_location: FacetBucket[]
+  bhk: FacetBucket[]
+  furnishing: FacetBucket[]
+}
+
+export interface ListingsQuery {
+  transaction_type?: string[]
+  property_type?: string[]
+  listing_intent?: string[]
+  canonical_location?: string
+  furnishing?: string[]
+  bhk?: number[]
+  min_price?: number | ''
+  max_price?: number | ''
+  min_sqft?: number | ''
+  max_sqft?: number | ''
+  semantic_q?: string
+  limit?: number
+  offset?: number
+}
+
+// Corresponds to: GET /chat/source/{listingId} response
 export interface SourceChunk {
+  listing_id: string
   chunk_id: string
   message_start: string | null
   sender: string | null

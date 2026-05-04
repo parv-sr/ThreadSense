@@ -17,7 +17,7 @@ class ParsedQueryLLMOutput(BaseModel):
     location: str | None = Field(default=None)
     transaction_type: str | None = Field(
         default=None,
-        description="RENT or SALE — inferred strictly from query intent",
+        description="RENT, SALE, or LEASE inferred strictly from query intent",
     )
     property_type: str | None = Field(
         default=None,
@@ -45,7 +45,7 @@ class GradedListing(BaseModel):
 
 
 class GradingResponse(BaseModel):
-    """Wrapper so OpenAI structured output receives a top-level object schema."""
+    """Wrapper so structured output receives a top-level object schema."""
 
     results: list[GradedListing] = Field(default_factory=list)
 

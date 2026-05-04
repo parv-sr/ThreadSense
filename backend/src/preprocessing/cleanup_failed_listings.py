@@ -11,15 +11,15 @@ from backend.src.models.preprocessing import ListingStatus, PropertyListing, Pro
 def _build_placeholder_filter():
     return (
         PropertyListing.status == ListingStatus.FAILED,
-        PropertyListing.property_type == PropertyType.OTHER,
+        PropertyListing.property_type == PropertyType.UNKNOWN,
         PropertyListing.bhk.is_(None),
         PropertyListing.price.is_(None),
         PropertyListing.location.is_(None),
         PropertyListing.contact_number.is_(None),
-        PropertyListing.furnished.is_(None),
+        PropertyListing.furnishing.is_(None),
         PropertyListing.floor_number.is_(None),
         PropertyListing.total_floors.is_(None),
-        PropertyListing.area_sqft.is_(None),
+        PropertyListing.sqft.is_(None),
         PropertyListing.landmark.is_(None),
         PropertyListing.confidence_score == 0.0,
     )

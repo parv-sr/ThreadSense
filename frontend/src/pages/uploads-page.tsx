@@ -1,19 +1,21 @@
 import { useMemo, useState } from 'react'
-import { AlertTriangle, Loader2 } from 'lucide-react'
+import { AlertTriangle, Loader2, Trash2 } from 'lucide-react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
 import { Link } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { UploadDropzone } from '@/components/upload/upload-dropzone'
 import { Card } from '@/components/ui/card'
-import { useIngestMutation, useUploadsQuery } from '@/lib/api'
+import { useDeleteUploadMutation, useIngestMutation, useUploadsQuery } from '@/lib/api'
 import type { IngestResponse } from '@/types/api'
 
 export const UploadsPage = () => {
   const queryClient = useQueryClient()
   const ingestMutation = useIngestMutation()
+  const deleteMutation = useDeleteUploadMutation()
   const { data: uploads = [] } = useUploadsQuery()
   const [uploadProgress, setUploadProgress] = useState<number | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
 
   const handleUpload = async (file: File) => {
     try {
@@ -29,10 +31,23 @@ export const UploadsPage = () => {
       setUploadProgress(null)
       const r = result as IngestResponse
       toast.success(r.status === 'ALREADY_EXISTS' ? 'Duplicate file detected.' : 'Upload queued successfully.')
-      // Refresh upload list after a successful upload
       queryClient.invalidateQueries({ queryKey: ['uploads'] })
     } catch {
       toast.error('Upload failed. Please try again.')
+    }
+  }
+
+  const handleDelete = async (rawfileId: string, fileName: string) => {
+    if (deletingId) return
+    setDeletingId(rawfileId)
+    try {
+      await deleteMutation.mutateAsync(rawfileId)
+      toast.success(`"${fileName}" deleted.`)
+      queryClient.invalidateQueries({ queryKey: ['uploads'] })
+    } catch {
+      toast.error('Delete failed.')
+    } finally {
+      setDeletingId(null)
     }
   }
 
@@ -117,12 +132,22 @@ export const UploadsPage = () => {
                       </span>
                     </td>
                     <td className='px-4 py-3'>
-                      <Link
-                        to={`/uploads/${event.rawfileId}`}
-                        className='inline-flex h-8 items-center justify-center rounded-md bg-cyan-400 px-3 text-xs font-semibold text-zinc-950 transition hover:bg-cyan-300'
-                      >
-                        View Details
-                      </Link>
+                      <div className='flex items-center gap-2'>
+                        <Link
+                          to={`/uploads/${event.rawfileId}`}
+                          className='inline-flex h-8 items-center justify-center rounded-md bg-cyan-400 px-3 text-xs font-semibold text-zinc-950 transition hover:bg-cyan-300'
+                        >
+                          View Details
+                        </Link>
+                        <button
+                          onClick={() => handleDelete(event.rawfileId, event.fileName)}
+                          disabled={deletingId === event.rawfileId}
+                          className='inline-flex h-8 items-center justify-center gap-1 rounded-md border border-red-500/30 bg-red-500/10 px-2.5 text-xs font-medium text-red-400 transition hover:bg-red-500/20 disabled:opacity-50'
+                        >
+                          <Trash2 className='h-3.5 w-3.5' />
+                          {deletingId === event.rawfileId ? '...' : 'Delete'}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}

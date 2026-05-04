@@ -1,0 +1,10 @@
+.git
+.sixth
+.venv
+__pycache__
+*.pyc
+.env
+frontend/node_modules
+frontend/dist
+rust_parser/target
+uploads

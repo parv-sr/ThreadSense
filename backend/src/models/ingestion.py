@@ -60,6 +60,10 @@ class RawFile(Base):
         nullable=True,
     )
     progress_percentage: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
 
     raw_chunks: Mapped[list[RawMessageChunk]] = relationship(
         back_populates="rawfile",
@@ -70,6 +74,7 @@ class RawFile(Base):
     __table_args__ = (
         Index("ix_raw_files_uploaded_at", "uploaded_at"),
         Index("ix_raw_files_status", "status"),
+        Index("ix_raw_files_last_heartbeat_at", "last_heartbeat_at"),
     )
 
     def __repr__(self) -> str:
@@ -109,6 +114,13 @@ class RawMessageChunk(Base):
     )
 
     rawfile: Mapped[RawFile] = relationship(back_populates="raw_chunks")
+    property_listing = relationship(
+        "PropertyListing",
+        back_populates="raw_chunk",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        uselist=False,
+    )
 
     __table_args__ = (
         Index("ix_raw_message_chunks_message_start", "message_start"),

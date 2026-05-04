@@ -1,9 +1,14 @@
+"""Tests for the extraction and enrichment pipeline."""
 from __future__ import annotations
 
 from backend.src.preprocessing.extractor import (
+    ExtractionFurnished,
     ExtractionPropertyType,
+    ExtractionTransactionType,
     ListingExtractionResult,
+    PropertyListing,
     _enrich_extraction,
+    _estimate_confidence,
 )
 
 
@@ -24,3 +29,24 @@ def test_enrich_extraction_populates_missing_core_fields() -> None:
     assert "bandra" in enriched.location.lower()
     assert enriched.contact_number == "9769566757"
     assert enriched.confidence_score > 0.0
+
+
+# ── Confidence score ─────────────────────────────────────────────────────
+
+def test_confidence_high_when_all_fields_present() -> None:
+    extraction = ListingExtractionResult(
+        property_type=ExtractionPropertyType.RESIDENTIAL,
+        location="Bandra West",
+        price=50000,
+        bhk=2.0,
+        contact_number="9876543210",
+    )
+    score = _estimate_confidence(extraction, "2bhk rent bandra 50k call 9876543210")
+    assert score >= 0.7
+
+
+def test_confidence_low_when_minimal_info() -> None:
+    extraction = ListingExtractionResult()
+    score = _estimate_confidence(extraction, "hi")
+    assert score <= 0.2
+

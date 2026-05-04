@@ -1,5 +1,4 @@
 import { useEffect, useState, useRef } from 'react'
-import { supabase } from '../lib/supabase'
 import { env } from '../lib/env'
 import type { UploadDetail } from '../types/api'
 
@@ -32,25 +31,10 @@ export const useUploadStream = (rawfileId: string | undefined) => {
     abortControllerRef.current = abortController
 
     const connectStream = async () => {
-      // Fetch token inside connectStream so each retry gets a fresh token
-      let token: string | undefined
-      for (let tokenAttempt = 0; tokenAttempt < 5; tokenAttempt++) {
-        const { data: { session } } = await supabase.auth.getSession()
-        token = session?.access_token
-        if (token) break
-        await new Promise(resolve => setTimeout(resolve, 500 * (tokenAttempt + 1)))
-      }
-
-      if (!token) {
-        if (isMounted) setState(s => ({ ...s, error: 'Authentication required. Please log in.' }))
-        return
-      }
-
       const url = `${env.apiUrl}/ingest/uploads/${rawfileId}/stream`
 
       const response = await fetch(url, {
         headers: {
-          Authorization: `Bearer ${token}`,
           Accept: 'text/event-stream',
         },
         signal: abortController.signal,

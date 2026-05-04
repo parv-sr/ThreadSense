@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import json
-import logging
 from collections.abc import AsyncGenerator
 
-import httpx
+import jwt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,79 +10,55 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.src.core.config import get_settings
 from backend.src.db.session import get_async_session as _get_async_session
 
-log = logging.getLogger(__name__)
+settings = get_settings()
+_bearer_scheme = HTTPBearer(auto_error=False)
 
-# ---------------------------------------------------------------------------
-# Database session
-# ---------------------------------------------------------------------------
+JWT_SECRET = settings.threadsense_admin_key if hasattr(settings, "threadsense_admin_key") else "change-me"
+JWT_ALGORITHM = "HS256"
+
 
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
     async for session in _get_async_session():
         yield session
 
 
-# ---------------------------------------------------------------------------
-# Auth: verify Supabase JWT via the Supabase Auth API
-#
-# Why not local JWT decode?
-# The project's Supabase instance issues user tokens signed with ES256
-# (ECDSA P-256).  PyJWT requires the `cryptography` package for EC/RSA
-# algorithms, which is not installed in this container image.  Verifying
-# via the Supabase /auth/v1/user endpoint is the canonical server-side
-# approach: it works with any signing algorithm, automatically handles
-# key rotation, and returns a rich user object with no extra dependencies.
-# ---------------------------------------------------------------------------
-
-_bearer_scheme = HTTPBearer(auto_error=False)
-
-
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
-) -> dict:
-    """Validate a Supabase Bearer token and return the user dict."""
-    if credentials is None or not credentials.credentials:
+) -> dict[str, str | None]:
+    """Validate JWT and return user identity.
+
+    Returns a dict with 'id' and 'username' keys.
+    Raises 401 if no valid token is present.
+    """
+    if credentials is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing authentication token",
+            detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    token = credentials.credentials
-    settings = get_settings()
+    try:
+        payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        user_id: str | None = payload.get("sub")
+        username: str | None = payload.get("username")
+        if user_id is None:
+            raise HTTPException(status_code=401, detail="Invalid token payload")
+        return {"id": user_id, "username": username}
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
 
-    supabase_url = settings.supabase_url
-    anon_key = settings.supabase_anon_key
-    if not supabase_url or not anon_key:
-        log.error("Supabase URL or anon key not configured on server")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Authentication service is not configured",
-        )
 
-    url = f"{supabase_url.rstrip('/')}/auth/v1/user"
-    headers = {
-        "apikey": anon_key,
-        "Authorization": f"Bearer {token}",
-    }
+async def get_optional_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+) -> dict[str, str | None]:
+    """Like get_current_user but returns empty dict instead of raising 401."""
+    if credentials is None:
+        return {"id": None, "username": None}
 
     try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.get(url, headers=headers)
-    except httpx.RequestError as exc:
-        log.warning("Supabase auth request failed: %s", exc)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Could not reach authentication service",
-        )
-
-    if resp.status_code == 200:
-        user = resp.json()
-        return {"id": user.get("id"), "email": user.get("email")}
-
-    # Token invalid or expired
-    log.debug("Supabase auth rejected token: HTTP %s", resp.status_code)
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Invalid or expired authentication token",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+        payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return {"id": payload.get("sub"), "username": payload.get("username")}
+    except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
+        return {"id": None, "username": None}

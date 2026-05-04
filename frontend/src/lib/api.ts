@@ -1,65 +1,38 @@
 import axios, { type AxiosProgressEvent } from 'axios'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { supabase } from './supabase'
-import { env } from './env'
 import { toast } from 'sonner'
+import { env } from './env'
 import type {
   ChatPayload,
   ChatResponse,
+  DedupeStats,
   IngestResponse,
+  ListingFacets,
+  ListingsQuery,
+  ListingsResponse,
   SourceChunk,
   TaskStatusResponse,
-  UploadSummary,
   UploadDetail,
-  DedupeStats,
+  UploadSummary,
 } from '../types/api'
-
-// ─── Axios instance ───────────────────────────────────────────────────────────
 
 export const api = axios.create({
   baseURL: env.apiUrl,
   timeout: 30_000,
 })
 
-// Attach the Supabase session token to every request.
-// If there is no session, skip silently — public routes still work.
-api.interceptors.request.use(async (config) => {
-  const { data: { session } } = await supabase.auth.getSession()
-  const token = session?.access_token
-  if (token) {
-    config.headers.set('Authorization', `Bearer ${token}`)
-  }
-  return config
-})
-
-// Track whether a sign-out redirect is already in progress so we only fire once.
-let _signingOut = false
-
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
-    if (error.response?.status === 401) {
-      if (!_signingOut) {
-        _signingOut = true
-        console.warn('[ThreadSense] 401 received — session invalid, signing out.')
-        await supabase.auth.signOut()
-        setTimeout(() => { _signingOut = false }, 3000) // Allow retry after redirect
-        window.location.replace('/settings')
-      }
-    } else {
-      // Only show a toast for unexpected server errors, not auth failures.
-      const msg: string =
-        error.response?.data?.detail ||
-        error.response?.data?.message ||
-        error.message ||
-        'An unexpected error occurred'
-      toast.error(msg, { id: msg }) // `id` deduplicates identical toasts
-    }
+    const msg: string =
+      error.response?.data?.detail ||
+      error.response?.data?.message ||
+      error.message ||
+      'An unexpected error occurred'
+    toast.error(msg, { id: msg })
     return Promise.reject(error)
-  }
+  },
 )
-
-// ─── DedupeStats helpers ──────────────────────────────────────────────────────
 
 const DEDUPE_DEFAULTS: DedupeStats = {
   total_messages: 0,
@@ -98,12 +71,10 @@ export const parseDedupeStats = (value: unknown): DedupeStats => {
   }
 }
 
-// ─── Mutations ────────────────────────────────────────────────────────────────
-
 export const useChatMutation = () =>
   useMutation({
     mutationFn: async (payload: ChatPayload) => {
-      const { data } = await api.post<ChatResponse>('/chat/', payload)
+      const { data } = await api.post<ChatResponse>('/chat', payload)
       return data
     },
   })
@@ -127,9 +98,53 @@ export const useIngestMutation = () =>
     },
   })
 
-// ─── Queries ──────────────────────────────────────────────────────────────────
+export const useFacetsQuery = () =>
+  useQuery({
+    queryKey: ['listing-facets'],
+    queryFn: async () => {
+      const { data } = await api.get<ListingFacets>('/listings/facets')
+      return data
+    },
+    staleTime: 20_000,
+  })
 
-/** Poll task status every 4 s, stopping when terminal. */
+export const useListingsQuery = (query: ListingsQuery) =>
+  useQuery({
+    queryKey: ['listings', query],
+    queryFn: async () => {
+      const params = new URLSearchParams()
+      Object.entries(query).forEach(([key, value]) => {
+        if (value === undefined || value === null || value === '') return
+        if (Array.isArray(value)) {
+          value.forEach((item) => params.append(key, String(item)))
+        } else {
+          params.set(key, String(value))
+        }
+      })
+      const { data } = await api.get<ListingsResponse>(`/listings?${params.toString()}`)
+      return data
+    },
+    placeholderData: (previous) => previous,
+  })
+
+export const useDeleteListingsMutation = () =>
+  useMutation({
+    mutationFn: async (ids: string[]) => {
+      const { data } = await api.post<{ deleted: number }>('/listings/delete', { ids })
+      return data
+    },
+  })
+
+export const useDeleteUploadMutation = () =>
+  useMutation({
+    mutationFn: async (rawfileId: string) => {
+      const { data } = await api.delete<{ deleted: boolean; rawfileId: string; fileName: string }>(
+        `/ingest/uploads/${rawfileId}`,
+      )
+      return data
+    },
+  })
+
 export const useTaskStatusQuery = (taskId?: string, enabled = true) =>
   useQuery({
     queryKey: ['task-status', taskId],
@@ -146,10 +161,6 @@ export const useTaskStatusQuery = (taskId?: string, enabled = true) =>
     },
   })
 
-/**
- * Upload list — polls while any upload is actively processing.
- * Stops auto-refresh once all uploads reach a terminal state.
- */
 export const useUploadsQuery = () =>
   useQuery({
     queryKey: ['uploads'],
@@ -160,16 +171,14 @@ export const useUploadsQuery = () =>
     staleTime: 10_000,
     refetchOnWindowFocus: true,
     refetchInterval: (query) => {
-      // Keep polling while any upload is not in a terminal state
       const uploads = query.state.data
       if (!uploads) return 15_000
-      const hasActive = uploads.some(u => !u.progress.terminal)
+      const hasActive = uploads.some((u) => !u.progress.terminal)
       return hasActive ? 8_000 : false
     },
     refetchIntervalInBackground: false,
   })
 
-/** Single upload detail — no polling; real-time updates come via SSE. */
 export const useUploadDetailQuery = (rawfileId: string | undefined) =>
   useQuery({
     queryKey: ['upload-detail', rawfileId],
@@ -182,12 +191,12 @@ export const useUploadDetailQuery = (rawfileId: string | undefined) =>
     refetchOnWindowFocus: false,
   })
 
-export const useSourceQuery = (chunkId?: string, enabled = true) =>
+export const useSourceQuery = (listingId?: string, enabled = true) =>
   useQuery({
-    queryKey: ['source', chunkId],
-    enabled: Boolean(chunkId) && enabled,
+    queryKey: ['source', listingId],
+    enabled: Boolean(listingId) && enabled,
     queryFn: async () => {
-      const { data } = await api.get<SourceChunk>(`/chat/source/${chunkId}`)
+      const { data } = await api.get<SourceChunk>(`/chat/source/${listingId}`)
       return data
     },
   })

@@ -50,7 +50,10 @@ def parse_query_constraints(query: str) -> QueryConstraints:
         filters["bhk"] = 0.5
         intent_terms.add("bhk")
 
-    if any(token in normalized_query for token in ("rent", "lease", "leave and license", "tenant")):
+    if any(token in normalized_query for token in ("lease", "leave and license")):
+        filters["transaction_type"] = "LEASE"
+        intent_terms.add("lease")
+    elif any(token in normalized_query for token in ("rent", "tenant")):
         filters["transaction_type"] = "RENT"
         intent_terms.add("rent")
     elif any(token in normalized_query for token in ("sale", "buy", "purchase", "ownership", "resale")):
@@ -64,14 +67,14 @@ def parse_query_constraints(query: str) -> QueryConstraints:
         filters["property_type"] = "RESIDENTIAL"
         intent_terms.add("residential")
 
-    max_price_match: re.Match[str] | None = re.search(r"\b(?:under|max|upto|up to)\s*₹?\s*(\d+(?:\.\d+)?)\s*(cr|crore|l|lac|lakh|k)?\b", normalized_query)
-    min_price_match: re.Match[str] | None = re.search(r"\b(?:above|min|from)\s*₹?\s*(\d+(?:\.\d+)?)\s*(cr|crore|l|lac|lakh|k)?\b", normalized_query)
+    max_price_match: re.Match[str] | None = re.search(r"\b(?:under|max|upto|up to)\s*₹?\s*(\d+(?:\.\d+)?)\s*(cr|crores?|l|lac|lacs|lakh|lakhs|k)?\b", normalized_query)
+    min_price_match: re.Match[str] | None = re.search(r"\b(?:above|min|from)\s*₹?\s*(\d+(?:\.\d+)?)\s*(cr|crores?|l|lac|lacs|lakh|lakhs|k)?\b", normalized_query)
 
     def _to_inr(value: float, unit: str | None) -> float:
         unit_normalized: str = (unit or "").lower()
-        if unit_normalized in {"cr", "crore"}:
+        if unit_normalized in {"cr", "crore", "crores"}:
             return value * 10_000_000.0
-        if unit_normalized in {"l", "lac", "lakh"}:
+        if unit_normalized in {"l", "lac", "lacs", "lakh", "lakhs"}:
             return value * 100_000.0
         if unit_normalized in {"k"}:
             return value * 1_000.0
