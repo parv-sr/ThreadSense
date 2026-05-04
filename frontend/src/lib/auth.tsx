@@ -16,7 +16,6 @@ interface AuthState {
   isLoading: boolean
   needsSetup: boolean | null
   login: (username: string, password: string) => Promise<void>
-  register: (username: string, password: string, displayName?: string) => Promise<void>
   logout: () => void
   refreshUser: () => Promise<void>
 }
@@ -66,7 +65,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
         if (token && !data.needs_setup) {
           try {
-            const { data: userData } = await api.get('/auth/me', {
+            const { data: userData } = await api.get('/users/me', {
               headers: { Authorization: `Bearer ${token}` },
             })
             setUser(userData as AuthUser)
@@ -89,25 +88,24 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const login = useCallback(async (username: string, password: string) => {
-    const { data } = await api.post('/auth/login', { username, password })
-    const { access_token, user: userData } = data as { access_token: string; user: AuthUser }
-    localStorage.setItem(TOKEN_KEY, access_token)
-    localStorage.setItem(USER_KEY, JSON.stringify(userData))
-    setToken(access_token)
-    setUser(userData)
-    setNeedsSetup(false)
-  }, [])
-
-  const register = useCallback(async (username: string, password: string, displayName?: string) => {
-    const { data } = await api.post('/auth/register', {
-      username,
-      password,
-      display_name: displayName || username,
+    const formData = new URLSearchParams()
+    const loginEmail = username.includes('@') ? username : `${username}@threadsense.com`
+    formData.append('username', loginEmail)
+    formData.append('password', password)
+    
+    const { data } = await api.post('/auth/login', formData, {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
     })
-    const { access_token, user: userData } = data as { access_token: string; user: AuthUser }
+    const access_token = data.access_token
     localStorage.setItem(TOKEN_KEY, access_token)
-    localStorage.setItem(USER_KEY, JSON.stringify(userData))
     setToken(access_token)
+    
+    // Fetch user details from /users/me
+    const { data: userData } = await api.get('/users/me', {
+      headers: { Authorization: `Bearer ${access_token}` }
+    })
+    
+    localStorage.setItem(USER_KEY, JSON.stringify(userData))
     setUser(userData)
     setNeedsSetup(false)
   }, [])
@@ -122,7 +120,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const refreshUser = useCallback(async () => {
     if (!token) return
     try {
-      const { data } = await api.get('/auth/me')
+      const { data } = await api.get('/users/me')
       setUser(data as AuthUser)
       localStorage.setItem(USER_KEY, JSON.stringify(data))
     } catch {
@@ -139,7 +137,6 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         isLoading,
         needsSetup,
         login,
-        register,
         logout,
         refreshUser,
       }}

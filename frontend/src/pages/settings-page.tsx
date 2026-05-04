@@ -9,7 +9,6 @@ import { api } from '@/lib/api'
 export const SettingsPage = () => {
   const { user, logout, refreshUser } = useAuth()
   const [displayName, setDisplayName] = useState(user?.display_name || '')
-  const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [saving, setSaving] = useState(false)
 
@@ -22,22 +21,15 @@ export const SettingsPage = () => {
         body.display_name = displayName.trim()
       }
       if (newPassword) {
-        if (!currentPassword) {
-          toast.error('Current password is required to set a new password.')
-          setSaving(false)
-          return
-        }
-        body.current_password = currentPassword
-        body.new_password = newPassword
+        body.password = newPassword
       }
       if (Object.keys(body).length === 0) {
         toast.info('No changes to save.')
         setSaving(false)
         return
       }
-      await api.put('/auth/me', body)
+      await api.patch('/users/me', body)
       await refreshUser()
-      setCurrentPassword('')
       setNewPassword('')
       toast.success('Profile updated.')
     } catch {
@@ -87,15 +79,7 @@ export const SettingsPage = () => {
               <KeyRound className='h-4 w-4 text-zinc-500' />
               <p className='text-sm font-medium text-zinc-400'>Change Password</p>
             </div>
-            <div className='grid gap-3 sm:grid-cols-2'>
-              <input
-                type='password'
-                value={currentPassword}
-                onChange={(e) => setCurrentPassword(e.target.value)}
-                placeholder='Current password'
-                autoComplete='current-password'
-                className='rounded-lg border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-cyan-500/50'
-              />
+            <div className='grid gap-3 sm:grid-cols-1'>
               <input
                 type='password'
                 value={newPassword}

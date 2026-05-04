@@ -112,19 +112,40 @@ async def client(test_engine) -> AsyncGenerator[AsyncClient, None]:
 
 
 @pytest_asyncio.fixture
-async def auth_token(client: AsyncClient) -> str:
-    """Register a test user and return a valid JWT token."""
-    resp = await client.post("/api/auth/register", json={
-        "username": f"testuser_{uuid4().hex[:8]}",
-        "password": "testpass123",
-        "display_name": "Test User",
-    })
-    if resp.status_code == 403:
-        # Users already exist — login instead
-        resp = await client.post("/api/auth/login", json={
-            "username": "testuser",
+async def auth_token(client: AsyncClient, test_engine) -> str:
+    """Create a test user and return a valid JWT token."""
+    from backend.src.api.auth_config import UserCreate, UserManager
+    from backend.src.models.users import User
+    from fastapi_users_db_sqlalchemy import SQLAlchemyUserDatabase
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    async with session_factory() as session:
+        user_db = SQLAlchemyUserDatabase(session, User)
+        user_manager = UserManager(user_db)
+        
+        email = f"testuser_{uuid4().hex[:8]}@test.local"
+        user_create = UserCreate(
+            email=email,
+            password="testpass123",
+            username=email,
+            display_name="Test User",
+            is_active=True,
+            is_verified=True,
+        )
+        try:
+            await user_manager.create(user_create)
+        except Exception:
+            pass
+
+    resp = await client.post(
+        "/api/auth/login",
+        data={
+            "username": email,
             "password": "testpass123",
-        })
+        },
+        headers={"Content-Type": "application/x-www-form-urlencoded"}
+    )
     data = resp.json()
     return data["access_token"]
 
