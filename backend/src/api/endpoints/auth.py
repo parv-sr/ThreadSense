@@ -83,44 +83,8 @@ def _user_response(user: User) -> UserResponse:
 
 @router.get("/bootstrap")
 async def bootstrap_check(session: AsyncSession = Depends(get_db_session)) -> dict[str, bool]:
-    """Check if any users exist. Frontend uses this to decide whether to show
-    the registration form or the login form."""
-    count = (await session.execute(select(func.count(User.id)))).scalar_one()
-    return {"needs_setup": count == 0}
-
-
-@router.post("/register", status_code=status.HTTP_201_CREATED)
-async def register(
-    body: RegisterRequest,
-    session: AsyncSession = Depends(get_db_session),
-) -> TokenResponse:
-    # Only allow registration when no users exist (first-run bootstrap)
-    count = (await session.execute(select(func.count(User.id)))).scalar_one()
-    if count > 0:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Registration is disabled. Contact your admin.",
-        )
-
-    existing = (await session.execute(
-        select(User).where(User.username == body.username)
-    )).scalar_one_or_none()
-    if existing:
-        raise HTTPException(status_code=409, detail="Username already taken")
-
-    user = User(
-        username=body.username,
-        email=f"{body.username}@threadsense.local",
-        display_name=body.display_name or body.username,
-        hashed_password=pwd_context.hash(body.password),
-    )
-    session.add(user)
-    await session.commit()
-    await session.refresh(user)
-    log.info("user_registered", username=user.username, user_id=str(user.id))
-
-    token = _create_token(str(user.id), user.username)
-    return TokenResponse(access_token=token, user=_user_response(user))
+    """Check if any users exist. Always false now since we use .env admin."""
+    return {"needs_setup": False}
 
 
 @router.post("/login")
@@ -128,15 +92,36 @@ async def login(
     body: LoginRequest,
     session: AsyncSession = Depends(get_db_session),
 ) -> TokenResponse:
+    
+    is_env_admin = (
+        body.username == settings.threadsense_admin_username and
+        body.password == settings.threadsense_admin_password
+    )
+
     user = (await session.execute(
         select(User).where(User.username == body.username)
     )).scalar_one_or_none()
 
-    if user is None or not pwd_context.verify(body.password, user.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid username or password",
-        )
+    if is_env_admin:
+        if not user:
+            user = User(
+                username=settings.threadsense_admin_username,
+                email=f"{settings.threadsense_admin_username}@threadsense.local",
+                display_name="Administrator",
+                hashed_password=pwd_context.hash(settings.threadsense_admin_password[:72]),
+            )
+            session.add(user)
+            await session.commit()
+            await session.refresh(user)
+        elif not pwd_context.verify(settings.threadsense_admin_password[:72], user.hashed_password):
+            user.hashed_password = pwd_context.hash(settings.threadsense_admin_password[:72])
+            await session.commit()
+    else:
+        if user is None or not pwd_context.verify(body.password[:72], user.hashed_password):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid username or password",
+            )
 
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled")
@@ -184,9 +169,9 @@ async def update_me(
     if body.new_password is not None:
         if not body.current_password:
             raise HTTPException(status_code=400, detail="Current password required to set new password")
-        if not pwd_context.verify(body.current_password, user.hashed_password):
+        if not pwd_context.verify(body.current_password[:72], user.hashed_password):
             raise HTTPException(status_code=400, detail="Current password is incorrect")
-        user.hashed_password = pwd_context.hash(body.new_password)
+        user.hashed_password = pwd_context.hash(body.new_password[:72])
 
     await session.commit()
     await session.refresh(user)

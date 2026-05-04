@@ -65,6 +65,8 @@ class Settings(BaseSettings):
     llm_batch_size: int = Field(default=50, alias="LLM_BATCH_SIZE")
 
     threadsense_admin_key: str = Field(default="change-me", alias="THREADSENSE_ADMIN_KEY")
+    threadsense_admin_username: str = Field(default="admin", alias="THREADSENSE_ADMIN_USERNAME")
+    threadsense_admin_password: str = Field(default="admin", alias="THREADSENSE_ADMIN_PASSWORD")
 
     @property
     def redis_broker_url(self) -> str:
