@@ -31,6 +31,7 @@ class RAGState(TypedDict):
     graded_listings: list[GradedListing]
     final_answer: AnswerWithSources | None
     thread_id: str
+    use_llm_grading: bool
 
 
 # Build the deterministic pipeline: parse -> filter -> retrieve -> grade -> answer.

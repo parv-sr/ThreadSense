@@ -36,8 +36,12 @@ async def chat(payload: ChatRequest) -> ChatResponse:
 
     set_retriever_context(retriever)
     try:
+        state_input = {"query": payload.message, "thread_id": resolved_thread_id, "hard_filters": {}}
+        if payload.use_llm_grading is not None:
+            state_input["use_llm_grading"] = payload.use_llm_grading
+
         result: dict[str, object] = await rag_app.ainvoke(
-            {"query": payload.message, "thread_id": resolved_thread_id, "hard_filters": {}},
+            state_input,
             config={"configurable": {"thread_id": resolved_thread_id}},
         )
         final_answer: object | None = result.get("final_answer")

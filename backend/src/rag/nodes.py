@@ -100,6 +100,23 @@ async def rerank_grader_node(state: dict[str, Any]) -> dict[str, Any]:
     docs: list[Document] = list(state.get("retrieved_listings") or [])
     parsed_query: ParsedQuery | None = state.get("parsed_query")
     soft_preferences: str = parsed_query.soft_preferences if parsed_query is not None else ""
+    use_llm_grading: bool = state.get("use_llm_grading", settings.rag_enable_llm_grading)
+
+    if not use_llm_grading:
+        graded_listings: list[GradedListing] = []
+        for doc in docs:
+            metadata: dict[str, Any] = dict(doc.metadata or {})
+            listing_id = str(metadata.get("listing_id") or "")
+            if not listing_id:
+                continue
+            distance = metadata.get("semantic_distance")
+            try:
+                score = max(0.0, 1.0 - float(distance)) if distance is not None else 0.5
+            except (ValueError, TypeError):
+                score = 0.5
+            graded_listings.append(GradedListing(listing_id=listing_id, is_valid=True, relevance_score=score, reason="Deterministic matching"))
+        logger.info("rag_listings_graded_deterministically", graded_count=len(graded_listings))
+        return {"graded_listings": graded_listings}
 
     evidence: list[dict[str, Any]] = []
     for doc in docs:

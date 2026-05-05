@@ -30,7 +30,13 @@ export const ChatPage = () => {
     setInput('')
 
     try {
-      const data = await chatMutation.mutateAsync({ message: userMsg.message, thread_id: threadId })
+      const useLlmGradingStr = localStorage.getItem('threadsense:use_llm_grading')
+      const useLlmGrading = useLlmGradingStr ? useLlmGradingStr === 'true' : false
+      const data = await chatMutation.mutateAsync({ 
+        message: userMsg.message, 
+        thread_id: threadId,
+        use_llm_grading: useLlmGrading 
+      })
       setMessages((prev) => [
         ...prev,
         {

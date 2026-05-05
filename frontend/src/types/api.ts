@@ -69,6 +69,7 @@ export interface UploadDetail {
 export interface ChatPayload {
   message: string
   thread_id?: string
+  use_llm_grading?: boolean
 }
 
 // Corresponds to: POST /chat/ response

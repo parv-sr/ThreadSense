@@ -11,6 +11,15 @@ export const SettingsPage = () => {
   const [displayName, setDisplayName] = useState(user?.display_name || '')
   const [newPassword, setNewPassword] = useState('')
   const [saving, setSaving] = useState(false)
+  const [useLlmGrading, setUseLlmGrading] = useState(() => {
+    return localStorage.getItem('threadsense:use_llm_grading') === 'true'
+  })
+
+  const toggleLlmGrading = () => {
+    const next = !useLlmGrading
+    setUseLlmGrading(next)
+    localStorage.setItem('threadsense:use_llm_grading', String(next))
+  }
 
   const handleUpdateProfile = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -122,6 +131,26 @@ export const SettingsPage = () => {
             <p className='text-zinc-500'>LLM Gateway</p>
             <p className='mt-1 text-zinc-200'>OpenRouter</p>
           </div>
+        </div>
+
+        <div className='mt-4 flex items-center justify-between rounded-lg border border-zinc-800 p-4'>
+          <div>
+            <p className='font-medium text-zinc-100'>Enable LLM Grading (Higher Accuracy, Higher Cost)</p>
+            <p className='text-sm text-zinc-500'>Score retrieved listings using an LLM instead of simple distance matching.</p>
+          </div>
+          <button
+            type='button'
+            onClick={toggleLlmGrading}
+            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+              useLlmGrading ? 'bg-cyan-500' : 'bg-zinc-700'
+            }`}
+          >
+            <span
+              className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                useLlmGrading ? 'translate-x-6' : 'translate-x-1'
+              }`}
+            />
+          </button>
         </div>
       </Card>
 

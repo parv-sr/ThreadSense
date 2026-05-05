@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     db_pool_recycle_seconds: int = Field(default=1800, alias="DB_POOL_RECYCLE_SECONDS")
 
     llm_batch_size: int = Field(default=50, alias="LLM_BATCH_SIZE")
+    rag_enable_llm_grading: bool = Field(default=False, alias="RAG_ENABLE_LLM_GRADING")
 
     threadsense_admin_key: str = Field(default="change-me", alias="THREADSENSE_ADMIN_KEY")
     threadsense_admin_username: str = Field(default="admin", alias="THREADSENSE_ADMIN_USERNAME")

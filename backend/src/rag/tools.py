@@ -130,7 +130,7 @@ async def hybrid_retrieve(
         query=query,
         filters=filters,
         parsed_filters=parsed_filters,
-        limit=20,
+        limit=10,
     )
     _docs_ctx.set(docs)
     logger.info("tool_hybrid_retrieve", query=query, filters=filters, count=len(docs))

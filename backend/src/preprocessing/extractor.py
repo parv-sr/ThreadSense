@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from __future__ import annotations
+
+import asyncio
 import os
 import re
 from enum import StrEnum
@@ -8,6 +11,7 @@ from typing import Any, Sequence
 from uuid import UUID
 
 import structlog
+from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field, field_validator, model_validator
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
@@ -584,6 +588,15 @@ class ListingExtractor:
             temperature=0.0,
             api_key=settings.openrouter_api_key,
             base_url=settings.openrouter_base_url,
+            default_headers={
+                "HTTP-Referer": "https://threadsense.local",
+                "X-Title": "ThreadSense",
+            },
+            model_kwargs={
+                "extra_body": {
+                    "cache_control": {"type": "ephemeral"}
+                }
+            }
         )
         self._structured_model = self._model.with_structured_output(BatchEnvelope, method="json_mode")
         self._single_structured_model = self._model.with_structured_output(PropertyListing, method="function_calling")
@@ -596,9 +609,12 @@ class ListingExtractor:
     )
     async def _invoke_packet(self, packet_messages: Sequence[str]) -> BatchEnvelope:
         prompt_user = construct_batch_prompt(packet_messages)
-        full_prompt = f"SYSTEM INSTRUCTIONS:\n{self._system_prompt}\n\nUSER INPUT:\n{prompt_user}"
+        messages = [
+            SystemMessage(content=[{"type": "text", "text": self._system_prompt, "cache_control": {"type": "ephemeral"}}]),
+            HumanMessage(content=prompt_user)
+        ]
         async with self._semaphore:
-            return await self._structured_model.ainvoke(full_prompt)
+            return await self._structured_model.ainvoke(messages)
 
     async def _process_packet(
         self,
