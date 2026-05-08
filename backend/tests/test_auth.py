@@ -17,20 +17,43 @@ async def test_bootstrap_check_empty_db(client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_login_valid_credentials(client: AsyncClient) -> None:
-    # Use the admin credentials that are bootstrapped via the test conftest or environment
-    from backend.src.core.config import get_settings
-    settings = get_settings()
-    
-    login_email = f"{settings.threadsense_admin_username}@threadsense.com"
+async def test_login_valid_credentials(client: AsyncClient, test_engine) -> None:
+    from backend.src.api.auth_config import UserCreate, UserManager
+    from backend.src.models.users import User
+    from fastapi_users_db_sqlalchemy import SQLAlchemyUserDatabase
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    # 1. Explicitly seed a known test user into the database
+    session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    async with session_factory() as session:
+        user_db = SQLAlchemyUserDatabase(session, User)
+        user_manager = UserManager(user_db)
+        
+        email = "validlogin@test.local"
+        password = "securepassword123"
+        user_create = UserCreate(
+            email=email,
+            password=password,
+            username=email,
+            display_name="Login Test",
+            is_active=True,
+            is_verified=True,
+        )
+        try:
+            await user_manager.create(user_create)
+        except Exception:
+            pass # Ignore if user already exists from a previous aborted run
+
+    # 2. Attempt to log in with the exact credentials we just created
     resp = await client.post(
         "/api/auth/login",
         data={
-            "username": login_email,
-            "password": settings.threadsense_admin_password,
+            "username": email,
+            "password": password,
         },
         headers={"Content-Type": "application/x-www-form-urlencoded"}
     )
+    
     assert resp.status_code == 200
     data = resp.json()
     assert "access_token" in data
