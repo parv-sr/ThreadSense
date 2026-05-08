@@ -30,7 +30,7 @@ TEST_DATABASE_URL = os.getenv(
 # Override the DATABASE_URL before any app module is imported so that
 # `get_settings()` picks up the test database.
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
-os.environ["THREADSENSE_ADMIN_KEY"] = "test-secret-key"
+os.environ["THREADSENSE_ADMIN_KEY"] = "test-secret-key-must-be-at-least-32-chars-long"
 os.environ["APP_ENV"] = "test"
 
 
@@ -124,7 +124,7 @@ async def auth_token(client: AsyncClient, test_engine) -> str:
         user_db = SQLAlchemyUserDatabase(session, User)
         user_manager = UserManager(user_db)
         
-        email = f"testuser_{uuid4().hex[:8]}@test.local"
+        email = f"testuser_{uuid4().hex[:8]}@test.com"
         user_create = UserCreate(
             email=email,
             password="testpass123",
