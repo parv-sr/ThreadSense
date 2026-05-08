@@ -81,7 +81,7 @@ jobs:
 
       - name: Run tests
         run: |
-          uv run pytest backend/tests/ -v --tb=short -x
+          PYTHONPATH=. uv run pytest backend/tests/ -v --tb=short -x
 
       - name: Lint check
         run: |

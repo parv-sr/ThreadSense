@@ -84,3 +84,19 @@ async def test_filter_with_no_criteria_returns_all() -> None:
     )
 
     assert len(filtered) == 2
+
+
+@pytest.mark.asyncio
+async def test_filter_safely_ignores_missing_metadata_keys() -> None:
+    docs: list[Document] = [
+        Document(page_content="listing-perfect", metadata={"location": "Bandra", "bhk": 2.0}),
+        Document(page_content="listing-corrupted", metadata={}),
+        Document(page_content="listing-weird-types", metadata={"location": None, "bhk": "two"}),
+    ]
+
+    filtered = await filter_listings.ainvoke(
+        {"docs": docs, "criteria": {"location": "Bandra", "bhk": 2.0}}
+    )
+    
+    assert len(filtered) == 1
+    assert filtered[0].page_content == "listing-perfect"

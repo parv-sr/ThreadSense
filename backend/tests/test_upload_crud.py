@@ -113,3 +113,30 @@ async def test_upload_progress_endpoint(client: AsyncClient, auth_token: str) ->
     data = resp.json()
     assert "progress" in data
     assert "percentage" in data["progress"]
+
+
+@pytest.mark.asyncio
+async def test_cannot_access_other_users_upload(client: AsyncClient, test_engine) -> None:
+    from backend.tests.conftest import auth_token as create_token
+    token1 = await create_token(client, test_engine)
+    files = {"file": ("user1.txt", b"[01/01/24] Alice: 2bhk rent", "text/plain")}
+    resp1 = await client.post("/api/ingest/", files=files, headers=auth_headers(token1))
+    upload_id = resp1.json()["rawfile_id"]
+
+    token2 = await create_token(client, test_engine)
+    fetch_resp = await client.get(f"/api/ingest/uploads/{upload_id}", headers=auth_headers(token2))
+    assert fetch_resp.status_code in (404, 403)
+
+
+@pytest.mark.asyncio
+async def test_cannot_delete_other_users_upload(client: AsyncClient, test_engine) -> None:
+    from backend.tests.conftest import auth_token as create_token
+    token1 = await create_token(client, test_engine)
+    token2 = await create_token(client, test_engine)
+    
+    files = {"file": ("user1.txt", b"[01/01/24] Alice: 2bhk rent", "text/plain")}
+    resp1 = await client.post("/api/ingest/", files=files, headers=auth_headers(token1))
+    upload_id = resp1.json()["rawfile_id"]
+
+    del_resp = await client.delete(f"/api/ingest/uploads/{upload_id}", headers=auth_headers(token2))
+    assert del_resp.status_code in (404, 403)

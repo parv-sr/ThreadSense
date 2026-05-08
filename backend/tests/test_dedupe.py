@@ -64,3 +64,19 @@ def test_keywords_regex_matches_property_terms() -> None:
 def test_keywords_regex_does_not_match_noise() -> None:
     assert KEYWORDS_RE.search("hello world") is None
     assert KEYWORDS_RE.search("good morning") is None
+
+
+def test_normalize_for_hash_with_emojis_and_unicode() -> None:
+    h1 = _normalize_for_hash("2bhk rent bandra ✨🔥", "Alice")
+    h2 = _normalize_for_hash("2BHK RENT BANDRA", "Alice")
+    assert h1 == h2
+
+
+def test_keywords_regex_word_boundaries() -> None:
+    assert KEYWORDS_RE.search("My parent is coming") is None
+    assert KEYWORDS_RE.search("change the locale") is None
+
+
+def test_looks_like_listing_handles_empty_or_none() -> None:
+    assert _looks_like_listing_candidate("") is False
+    assert _looks_like_listing_candidate("   \n  ") is False

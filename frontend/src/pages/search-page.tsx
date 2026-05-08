@@ -1,8 +1,6 @@
 import { useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { useQueryClient } from '@tanstack/react-query'
 import {
-  AlertTriangle, BedDouble, Building2, Car, Download, FileText, IndianRupee, LayoutGrid, List, Loader2, MapPin, Ruler, Table2, Trash2
+  AlertTriangle, BedDouble, Download, IndianRupee, LayoutGrid, List, Loader2, MapPin, Ruler, Table2, Trash2
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { toast } from 'sonner'

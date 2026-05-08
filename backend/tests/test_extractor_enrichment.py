@@ -50,3 +50,23 @@ def test_confidence_low_when_minimal_info() -> None:
     score = _estimate_confidence(extraction, "hi")
     assert score <= 0.2
 
+
+def test_enrich_extraction_handles_extreme_outliers() -> None:
+    base = ListingExtractionResult(
+        property_type=ExtractionPropertyType.RESIDENTIAL,
+        bhk=500.0, 
+        price=10,
+        confidence_score=0.0,
+    )
+    enriched = _enrich_extraction(base, "massive building")
+    score = _estimate_confidence(enriched, "massive building")
+    assert score < 0.5 
+
+
+def test_enrich_extraction_with_malformed_contact() -> None:
+    base = ListingExtractionResult(
+        contact_number="not a number 123",
+        confidence_score=0.0
+    )
+    enriched = _enrich_extraction(base, "call me at not a number 123")
+    assert enriched.contact_number is None or enriched.contact_number.isdigit()

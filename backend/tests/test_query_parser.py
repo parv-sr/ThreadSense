@@ -53,3 +53,22 @@ def test_parse_query_price_range() -> None:
     max_price = constraints.filters.get("max_price")
     if max_price is not None:
         assert max_price == 5_000_000.0
+
+
+def test_parse_query_mixed_numerals() -> None:
+    constraints1 = parse_query_constraints("two bhk in khar")
+    constraints2 = parse_query_constraints("2.5 bhk in khar")
+    
+    assert constraints1.filters.get("bhk") == 2.0
+    assert constraints2.filters.get("bhk") == 2.5
+
+
+def test_parse_query_nonsense_or_sql_injection_attempt() -> None:
+    constraints = parse_query_constraints("DROP TABLE users; --")
+    assert constraints.normalized_query is not None
+    assert isinstance(constraints.filters, dict)
+
+
+def test_parse_query_conflicting_intents() -> None:
+    constraints = parse_query_constraints("looking for 2bhk sale or rent")
+    assert "transaction_type" in constraints.filters
