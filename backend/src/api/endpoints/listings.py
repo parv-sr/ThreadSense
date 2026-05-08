@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Literal
 from uuid import UUID
 
 import structlog
@@ -42,6 +43,9 @@ def _listing_out(listing: PropertyListing, semantic_distance: float | None = Non
         location=listing.location,
         canonical_location=listing.canonical_location,
         furnishing=_enum_value(listing.furnishing) if listing.furnishing is not None else None,
+        floor_band=listing.floor_band,
+        price_per_sqft=listing.price_per_sqft,
+        has_contact=bool(listing.contact_number),
         pets_allowed=listing.pets_allowed,
         suspicious_flags=listing.suspicious_flags or [],
         confidence_score=listing.confidence_score,
@@ -69,6 +73,14 @@ def _apply_filters(
     max_price: int | None,
     min_sqft: int | None,
     max_sqft: int | None,
+    floor_band: list[str] | None = None,
+    price_status: list[str] | None = None,
+    min_psf: int | None = None,
+    max_psf: int | None = None,
+    has_contact: bool | None = None,
+    pets_allowed: bool | None = None,
+    suspicious_only: bool | None = None,
+    sender: str | None = None,
 ):
     if transaction_type:
         stmt = stmt.where(PropertyListing.transaction_type.in_([item.upper() for item in transaction_type]))
@@ -96,6 +108,25 @@ def _apply_filters(
         stmt = stmt.where(PropertyListing.sqft >= min_sqft)
     if max_sqft is not None:
         stmt = stmt.where(PropertyListing.sqft <= max_sqft)
+    if floor_band:
+        stmt = stmt.where(PropertyListing.floor_band.in_([item.upper() for item in floor_band]))
+    if price_status:
+        stmt = stmt.where(PropertyListing.price_status.in_([item.upper() for item in price_status]))
+    if min_psf is not None:
+        stmt = stmt.where(PropertyListing.price_per_sqft >= min_psf)
+    if max_psf is not None:
+        stmt = stmt.where(PropertyListing.price_per_sqft <= max_psf)
+    if has_contact is not None:
+        if has_contact:
+            stmt = stmt.where(PropertyListing.contact_number.is_not(None), PropertyListing.contact_number != "")
+        else:
+            stmt = stmt.where(or_(PropertyListing.contact_number.is_(None), PropertyListing.contact_number == ""))
+    if pets_allowed is not None:
+        stmt = stmt.where(PropertyListing.pets_allowed == pets_allowed)
+    if suspicious_only:
+        stmt = stmt.where(func.jsonb_array_length(PropertyListing.suspicious_flags) > 0)
+    if sender:
+        stmt = stmt.where(PropertyListing.sender.ilike(f"%{sender}%"))
     return stmt
 
 
@@ -136,6 +167,15 @@ async def list_listings(
     max_price: int | None = Query(default=None, ge=0),
     min_sqft: int | None = Query(default=None, ge=0),
     max_sqft: int | None = Query(default=None, ge=0),
+    floor_band: list[str] | None = Query(default=None),
+    price_status: list[str] | None = Query(default=None),
+    min_psf: int | None = Query(default=None, ge=0),
+    max_psf: int | None = Query(default=None, ge=0),
+    has_contact: bool | None = Query(default=None),
+    pets_allowed: bool | None = Query(default=None),
+    suspicious_only: bool | None = Query(default=None),
+    sender: str | None = Query(default=None),
+    sort_by: Literal["recent", "price_asc", "price_desc", "psf_asc", "psf_desc"] = Query(default="recent"),
     semantic_q: str | None = Query(default=None, max_length=1000),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
@@ -152,6 +192,14 @@ async def list_listings(
         max_price=max_price,
         min_sqft=min_sqft,
         max_sqft=max_sqft,
+        floor_band=floor_band,
+        price_status=price_status,
+        min_psf=min_psf,
+        max_psf=max_psf,
+        has_contact=has_contact,
+        pets_allowed=pets_allowed,
+        suspicious_only=suspicious_only,
+        sender=sender,
     )
     total = int((await session.execute(count_stmt)).scalar_one())
 
@@ -175,6 +223,14 @@ async def list_listings(
             max_price=max_price,
             min_sqft=min_sqft,
             max_sqft=max_sqft,
+            floor_band=floor_band,
+            price_status=price_status,
+            min_psf=min_psf,
+            max_psf=max_psf,
+            has_contact=has_contact,
+            pets_allowed=pets_allowed,
+            suspicious_only=suspicious_only,
+            sender=sender,
         )
         rows = (await session.execute(stmt.order_by(distance).offset(offset).limit(limit))).all()
         items = [_listing_out(listing, float(distance_value)) for listing, distance_value in rows]
@@ -191,8 +247,27 @@ async def list_listings(
             max_price=max_price,
             min_sqft=min_sqft,
             max_sqft=max_sqft,
+            floor_band=floor_band,
+            price_status=price_status,
+            min_psf=min_psf,
+            max_psf=max_psf,
+            has_contact=has_contact,
+            pets_allowed=pets_allowed,
+            suspicious_only=suspicious_only,
+            sender=sender,
         )
-        stmt = stmt.order_by(PropertyListing.updated_at.desc()).offset(offset).limit(limit)
+        if sort_by == "price_asc":
+            stmt = stmt.order_by(PropertyListing.price.asc().nulls_last())
+        elif sort_by == "price_desc":
+            stmt = stmt.order_by(PropertyListing.price.desc().nulls_last())
+        elif sort_by == "psf_asc":
+            stmt = stmt.order_by(PropertyListing.price_per_sqft.asc().nulls_last())
+        elif sort_by == "psf_desc":
+            stmt = stmt.order_by(PropertyListing.price_per_sqft.desc().nulls_last())
+        else:
+            stmt = stmt.order_by(PropertyListing.updated_at.desc())
+        
+        stmt = stmt.offset(offset).limit(limit)
         items = [_listing_out(listing) for listing in (await session.execute(stmt)).scalars().all()]
 
     logger.info("listings_search_complete", total=total, returned=len(items), semantic=bool(semantic_q))

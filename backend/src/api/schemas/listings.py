@@ -19,6 +19,9 @@ class ListingOut(BaseModel):
     location: str | None = None
     canonical_location: str | None = None
     furnishing: str | None = None
+    floor_band: str | None = None
+    price_per_sqft: int | None = None
+    has_contact: bool | None = None
     pets_allowed: bool | None = None
     suspicious_flags: list[str] = Field(default_factory=list)
     confidence_score: float

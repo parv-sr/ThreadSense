@@ -155,6 +155,8 @@ class PropertyListing(Base):
     timestamp: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     floor_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_floors: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    floor_band: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    price_per_sqft: Mapped[int | None] = mapped_column(Integer, nullable=True)
     landmark: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     status: Mapped[ListingStatus] = mapped_column(

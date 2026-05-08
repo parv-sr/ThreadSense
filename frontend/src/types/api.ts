@@ -101,6 +101,9 @@ export interface ListingResult {
   location: string | null
   canonical_location: string | null
   furnishing: string | null
+  floor_band: string | null
+  price_per_sqft: number | null
+  has_contact: boolean | null
   pets_allowed: boolean | null
   suspicious_flags: string[]
   confidence_score: number
@@ -141,6 +144,15 @@ export interface ListingsQuery {
   max_price?: number | ''
   min_sqft?: number | ''
   max_sqft?: number | ''
+  floor_band?: string[]
+  price_status?: string[]
+  min_psf?: number | ''
+  max_psf?: number | ''
+  has_contact?: boolean | null
+  pets_allowed?: boolean | null
+  suspicious_only?: boolean | null
+  sender?: string
+  sort_by?: 'recent' | 'price_asc' | 'price_desc' | 'psf_asc' | 'psf_desc'
   semantic_q?: string
   limit?: number
   offset?: number
