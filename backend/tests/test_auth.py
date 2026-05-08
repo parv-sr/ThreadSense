@@ -29,7 +29,7 @@ async def test_login_valid_credentials(client: AsyncClient, test_engine) -> None
         user_db = SQLAlchemyUserDatabase(session, User)
         user_manager = UserManager(user_db)
         
-        email = "validlogin@test.local"
+        email = "validlogin@test.com"
         password = "securepassword123"
         user_create = UserCreate(
             email=email,
