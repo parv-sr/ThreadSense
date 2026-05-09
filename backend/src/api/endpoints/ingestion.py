@@ -21,6 +21,8 @@ from backend.src.db.session import AsyncSessionLocal
 from backend.src.models.ingestion import RawFile, RawFileStatus, RawMessageChunk, RawMessageChunkStatus
 from backend.src.models.preprocessing import PropertyListing
 from backend.src.tasks.ingestion import ingest_raw_file_task
+from backend.src.api.auth_config import current_active_user
+from backend.src.models.users import User
 
 def _sanitise_content(text: str) -> str:
     """Remove null bytes (\x00) that PostgreSQL refuses in TEXT/VARCHAR columns.
@@ -180,6 +182,7 @@ def _summarize_insights(listings: list[dict[str, object]], progress: dict[str, o
 
 async def _fetch_upload_overview(
     session: AsyncSession,
+    user_id: UUID,
     *,
     rawfile_id: UUID | None = None,
 ) -> list[dict[str, object]]:
@@ -220,6 +223,7 @@ async def _fetch_upload_overview(
         )
         .outerjoin(chunk_stats_subquery, chunk_stats_subquery.c.rawfile_id == RawFile.id)
         .outerjoin(listing_stats_subquery, listing_stats_subquery.c.rawfile_id == RawFile.id)
+        .where(RawFile.owner_id == user_id)
         .order_by(RawFile.uploaded_at.desc())
     )
     if rawfile_id is not None:
@@ -260,8 +264,8 @@ async def _fetch_upload_overview(
     return uploads
 
 
-async def _fetch_upload_detail_payload(session: AsyncSession, rawfile_id: UUID) -> dict[str, object]:
-    uploads = await _fetch_upload_overview(session, rawfile_id=rawfile_id)
+async def _fetch_upload_detail_payload(session: AsyncSession, user_id: UUID, rawfile_id: UUID) -> dict[str, object]:
+    uploads = await _fetch_upload_overview(session, user_id, rawfile_id=rawfile_id)
     if not uploads:
         raise HTTPException(status_code=404, detail="Upload not found")
 
@@ -321,6 +325,7 @@ def _sse_frame(event: str, payload: dict[str, object]) -> str:
 async def ingest_file(
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_db_session),
+    user: User = Depends(current_active_user),
 ) -> dict[str, str]:
     filename = file.filename or "upload.txt"
     suffix = Path(filename).suffix.lower()
@@ -366,7 +371,7 @@ async def ingest_file(
         source="upload",
         processed=False,
         status=RawFileStatus.PENDING,
-        owner_id=None,
+        owner_id=user.id,
         notes=f"fingerprint={fingerprint}; uploaded_at={datetime.now(timezone.utc).isoformat()}",
     )
     session.add(rawfile)
@@ -382,29 +387,40 @@ async def ingest_file(
 
 
 @router.get("/uploads")
-async def list_uploads(session: AsyncSession = Depends(get_db_session)) -> dict[str, object]:
-    uploads = await _fetch_upload_overview(session)
+async def list_uploads(
+    session: AsyncSession = Depends(get_db_session),
+    user: User = Depends(current_active_user),
+) -> dict[str, object]:
+    uploads = await _fetch_upload_overview(session, user.id)
     return {"uploads": uploads}
 
 
 @router.get("/uploads/{rawfile_id}")
-async def upload_detail(rawfile_id: str, session: AsyncSession = Depends(get_db_session)) -> dict[str, object]:
+async def upload_detail(
+    rawfile_id: str, 
+    session: AsyncSession = Depends(get_db_session),
+    user: User = Depends(current_active_user),
+) -> dict[str, object]:
     try:
         parsed_id = UUID(rawfile_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="rawfile_id must be a valid UUID") from exc
-    return await _fetch_upload_detail_payload(session, parsed_id)
+    return await _fetch_upload_detail_payload(session, user.id, parsed_id)
 
 
 @router.delete("/uploads/{rawfile_id}")
-async def delete_upload(rawfile_id: str, session: AsyncSession = Depends(get_db_session)) -> dict[str, object]:
+async def delete_upload(
+    rawfile_id: str, 
+    session: AsyncSession = Depends(get_db_session),
+    user: User = Depends(current_active_user),
+) -> dict[str, object]:
     try:
         parsed_id = UUID(rawfile_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="rawfile_id must be a valid UUID") from exc
 
     rawfile = await session.get(RawFile, parsed_id)
-    if rawfile is None:
+    if rawfile is None or rawfile.owner_id != user.id:
         raise HTTPException(status_code=404, detail="Upload not found")
 
     # Delete physical file from disk
@@ -423,13 +439,17 @@ async def delete_upload(rawfile_id: str, session: AsyncSession = Depends(get_db_
 
 
 @router.get("/uploads/{rawfile_id}/progress")
-async def upload_progress(rawfile_id: str, session: AsyncSession = Depends(get_db_session)) -> dict[str, object]:
+async def upload_progress(
+    rawfile_id: str, 
+    session: AsyncSession = Depends(get_db_session),
+    user: User = Depends(current_active_user),
+) -> dict[str, object]:
     try:
         parsed_id = UUID(rawfile_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="rawfile_id must be a valid UUID") from exc
 
-    uploads = await _fetch_upload_overview(session, rawfile_id=parsed_id)
+    uploads = await _fetch_upload_overview(session, user.id, rawfile_id=parsed_id)
     if not uploads:
         raise HTTPException(status_code=404, detail="Upload not found")
 
@@ -442,7 +462,11 @@ async def upload_progress(rawfile_id: str, session: AsyncSession = Depends(get_d
 
 
 @router.get("/uploads/{rawfile_id}/stream")
-async def upload_detail_stream(rawfile_id: str, request: Request) -> StreamingResponse:
+async def upload_detail_stream(
+    rawfile_id: str, 
+    request: Request,
+    user: User = Depends(current_active_user),
+) -> StreamingResponse:
     try:
         parsed_id = UUID(rawfile_id)
     except ValueError as exc:
@@ -459,7 +483,7 @@ async def upload_detail_stream(rawfile_id: str, request: Request) -> StreamingRe
 
             try:
                 async with AsyncSessionLocal() as session:
-                    payload = await _fetch_upload_detail_payload(session, parsed_id)
+                    payload = await _fetch_upload_detail_payload(session, user.id, parsed_id)
                 consecutive_errors = 0  # reset on success
             except Exception as exc:
                 consecutive_errors += 1
@@ -516,10 +540,17 @@ async def upload_detail_stream(rawfile_id: str, request: Request) -> StreamingRe
 
 
 @router.get("/status/{task_id}")
-async def ingest_status(task_id: str, session: AsyncSession = Depends(get_db_session)) -> dict[str, object]:
+async def ingest_status(
+    task_id: str, 
+    session: AsyncSession = Depends(get_db_session),
+    user: User = Depends(current_active_user),
+) -> dict[str, object]:
     log.debug("ingest_status_requested", task_id=task_id)
     row = await session.execute(
-        select(RawFile).where(RawFile.notes.like(f"%task_id={task_id}%")).order_by(RawFile.uploaded_at.desc())
+        select(RawFile).where(
+            RawFile.notes.like(f"%task_id={task_id}%"),
+            RawFile.owner_id == user.id
+        ).order_by(RawFile.uploaded_at.desc())
     )
     rawfile: RawFile | None = row.scalars().first()
     if rawfile is None:
