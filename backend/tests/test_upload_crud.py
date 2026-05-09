@@ -1,6 +1,8 @@
 """Tests for upload CRUD operations (create, list, detail, delete)."""
 from __future__ import annotations
 
+import uuid
+
 import pytest
 from httpx import AsyncClient
 
@@ -115,28 +117,59 @@ async def test_upload_progress_endpoint(client: AsyncClient, auth_token: str) ->
     assert "percentage" in data["progress"]
 
 
+async def generate_secondary_token(client: AsyncClient, test_engine) -> str:
+    from backend.src.api.auth_config import UserCreate, UserManager
+    from backend.src.models.users import User
+    from fastapi_users_db_sqlalchemy import SQLAlchemyUserDatabase
+    from sqlalchemy.ext.asyncio import async_sessionmaker
+
+    session_factory = async_sessionmaker(test_engine, expire_on_commit=False)
+    async with session_factory() as session:
+        user_db = SQLAlchemyUserDatabase(session, User)
+        user_manager = UserManager(user_db)
+        
+        email = f"secondary_{uuid.uuid4().hex[:8]}@test.com"
+        user_create = UserCreate(
+            email=email,
+            password="testpass123",
+            username=email,
+            display_name="Secondary User",
+            is_active=True,
+            is_verified=True,
+        )
+        try:
+            await user_manager.create(user_create)
+        except Exception:
+            pass
+
+    resp = await client.post(
+        "/api/auth/login",
+        data={
+            "username": email,
+            "password": "testpass123",
+        },
+        headers={"Content-Type": "application/x-www-form-urlencoded"}
+    )
+    return resp.json()["access_token"]
+
+
 @pytest.mark.asyncio
-async def test_cannot_access_other_users_upload(client: AsyncClient, test_engine) -> None:
-    from backend.tests.conftest import auth_token as create_token
-    token1 = await create_token(client, test_engine)
+async def test_cannot_access_other_users_upload(client: AsyncClient, test_engine, auth_token: str) -> None:
     files = {"file": ("user1.txt", b"[01/01/24] Alice: 2bhk rent", "text/plain")}
-    resp1 = await client.post("/api/ingest/", files=files, headers=auth_headers(token1))
+    resp1 = await client.post("/api/ingest/", files=files, headers=auth_headers(auth_token))
     upload_id = resp1.json()["rawfile_id"]
 
-    token2 = await create_token(client, test_engine)
+    token2 = await generate_secondary_token(client, test_engine)
     fetch_resp = await client.get(f"/api/ingest/uploads/{upload_id}", headers=auth_headers(token2))
     assert fetch_resp.status_code in (404, 403)
 
 
 @pytest.mark.asyncio
-async def test_cannot_delete_other_users_upload(client: AsyncClient, test_engine) -> None:
-    from backend.tests.conftest import auth_token as create_token
-    token1 = await create_token(client, test_engine)
-    token2 = await create_token(client, test_engine)
-    
+async def test_cannot_delete_other_users_upload(client: AsyncClient, test_engine, auth_token: str) -> None:
     files = {"file": ("user1.txt", b"[01/01/24] Alice: 2bhk rent", "text/plain")}
-    resp1 = await client.post("/api/ingest/", files=files, headers=auth_headers(token1))
+    resp1 = await client.post("/api/ingest/", files=files, headers=auth_headers(auth_token))
     upload_id = resp1.json()["rawfile_id"]
 
+    token2 = await generate_secondary_token(client, test_engine)
     del_resp = await client.delete(f"/api/ingest/uploads/{upload_id}", headers=auth_headers(token2))
     assert del_resp.status_code in (404, 403)
