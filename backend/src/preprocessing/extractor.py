@@ -477,9 +477,9 @@ def _estimate_confidence(extraction: ListingExtractionResult, raw_text: str) -> 
     score: float = 0.2
     if extraction.location:
         score += 0.2
-    if extraction.price is not None:
+    if extraction.price is not None and extraction.price > 100:
         score += 0.2
-    if extraction.bhk is not None:
+    if extraction.bhk is not None and extraction.bhk < 20:
         score += 0.15
     if extraction.contact_number:
         score += 0.15
@@ -489,6 +489,7 @@ def _estimate_confidence(extraction: ListingExtractionResult, raw_text: str) -> 
         score += 0.05
     if len(raw_text.strip()) < 20:
         score -= 0.15
+        
     return max(0.0, min(1.0, round(score, 2)))
 
 
