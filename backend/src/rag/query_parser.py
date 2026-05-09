@@ -25,6 +25,17 @@ def parse_query_constraints(query: str) -> QueryConstraints:
     normalized_query: str = lowered_query
 
     replacements: list[tuple[str, str]] = [
+        (r"\bone\b", "1"),
+        (r"\btwo\b", "2"),
+        (r"\bthree\b", "3"),
+        (r"\bfour\b", "4"),
+        (r"\bfive\b", "5"),
+        (r"\bsix\b", "6"),
+        (r"\bseven\b", "7"),
+        (r"\beight\b", "8"),
+        (r"\bnine\b", "9"),
+        (r"\bten\b", "10"),
+        
         (r"\b([0-9]+)\s*[-/]?\s*bhk\b", r"\1 bhk"),
         (r"\b([0-9]+)\s*rk\b", "studio"),
         (r"\bbkc\b", "bandra kurla complex"),
@@ -35,6 +46,7 @@ def parse_query_constraints(query: str) -> QueryConstraints:
         (r"\bkhar\s*w\b", "khar west"),
         (r"\bkhar\s*e\b", "khar east"),
     ]
+    
     for pattern, replacement in replacements:
         normalized_query = re.sub(pattern, replacement, normalized_query, flags=re.IGNORECASE)
     normalized_query = re.sub(r"\s+", " ", normalized_query).strip()
