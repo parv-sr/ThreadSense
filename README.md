@@ -1,279 +1,150 @@
-# 🧵 ThreadSense v2
+**ThreadSense** is a high-performance, self-hosted intelligence pipeline that transforms raw WhatsApp real-estate chat exports into structured, searchable property listings. 
 
-> **ThreadSense** is an end-to-end WhatsApp real-estate intelligence pipeline.
-> It ingests chat exports, extracts structured property listings, embeds them, indexes them in Qdrant, and serves RAG-powered search/chat.
+It combines a fast Rust parser for ingestion, LLM-powered extraction via OpenRouter, relational storage in PostgreSQL, and vector search with pgvector. The system provides both a fast database explorer and a conversational LangGraph assistant.
 
----
+### Key Features
 
-## ✨ What this project does
+- **High-speed ingestion** — Preserved Rust parser for efficient WhatsApp chat parsing.
+- **Accurate structured extraction** — Strict Pydantic schemas with OpenRouter LLMs, batching, retries, and normalization.
+- **Hybrid search** — Hard SQL filters combined with optional pgvector semantic ranking.
+- **Dual interfaces**:
+  - `/search`: Fast faceted explorer with pagination, bulk operations, and source verification.
+  - `/chat`: LangGraph-powered conversational assistant for complex, comparative queries.
+- **Production-ready deployment** — Docker Compose with Caddy reverse proxy for TLS termination.
+- **Authentication** — JWT-based admin and user authentication.
 
-ThreadSense converts noisy WhatsApp messages into searchable listing intelligence:
+### Architecture
 
-1. 📥 **Ingestion** — upload `.txt` / `.zip` / `.rar` WhatsApp exports.
-2. 🧹 **Preprocessing** — parser + dedupe + junk/system filtering.
-3. 🧠 **Extraction** — LLM-based structured listing extraction (batched + retried).
-4. 🔎 **Embedding + Vector Indexing** — OpenAI embeddings upserted to Qdrant.
-5. 💬 **RAG Chat** — query listings through an API + frontend.
-
----
-
-## 🏗️ Monorepo layout
-
-```text
+```
 ThreadSense/
-├── backend/                 # FastAPI app + async workers + SQLAlchemy models
+├── rust_parser/          # High-performance WhatsApp parser (preserved from earlier versions)
+├── backend/              # FastAPI application
 │   ├── src/
-│   │   ├── api/             # REST endpoints (/ingest, /chat)
-│   │   ├── tasks/           # TaskIQ tasks (ingestion, extraction, embeddings)
-│   │   ├── preprocessing/   # LLM extraction pipeline
-│   │   ├── embeddings/      # Qdrant + embedding service
-│   │   ├── rag/             # Retrieval and agent orchestration
-│   │   ├── models/          # SQLAlchemy models
-│   │   ├── db/              # async engine/session/config
-│   │   └── startup.py       # migration + Qdrant bootstrap
-├── frontend/                # Vite + React UI
-├── rust_parser/             # Rust-accelerated WhatsApp parser
-├── docker-compose.yml       # API + worker runtime
-├── Dockerfile               # unified image for API/worker
-└── Makefile                 # convenience commands
+│   │   ├── api/          # REST endpoints for listings, chat, auth
+│   │   ├── core/         # Configuration and security
+│   │   ├── db/           # SQLAlchemy + async sessions
+│   │   ├── models/       # SQLAlchemy ORM models
+│   │   ├── schemas/      # Pydantic request/response models
+│   │   ├── preprocessing/# LLM extraction pipeline
+│   │   ├── embeddings/   # Vector embedding and storage
+│   │   ├── rag/          # LangGraph orchestration
+│   │   └── tasks/        # Background workers (Celery)
+│   ├── alembic/          # Database migrations
+│   └── tests/
+├── frontend/             # React + TypeScript + Vite + Tailwind
+├── docker-compose.yml    # Multi-service orchestration
+├── Caddyfile             # Reverse proxy and TLS
+├── Dockerfile            # Unified build
+└── pyproject.toml        # Python dependencies (uv)
 ```
 
----
+**Core Services**:
+- **PostgreSQL + pgvector**: Primary store for raw text, structured listings, and embeddings.
+- **Redis**: Celery broker and LangGraph checkpoint store.
+- **Caddy**: Self-hosted reverse proxy with automatic TLS.
+- **FastAPI backend**: REST API + background task workers.
+- **React frontend**: Static build served via Caddy.
 
-## 🧰 Tech stack
+### Quick Start
 
-- ⚡ **FastAPI** (backend API)
-- 🧵 **TaskIQ + Redis** (background jobs)
-- 🐘 **PostgreSQL / Supabase** (relational store)
-- 🧠 **OpenAI** (extraction + embeddings)
-- 📌 **Qdrant** (vector store)
-- 🦀 **Rust parser (maturin)** for WhatsApp parsing
-- 🎨 **React + Vite** frontend
+1. **Clone the repository** (inference branch):
+   ```bash
+   git clone https://github.com/parv-sr/ThreadSense.git
+   cd ThreadSense
+   git checkout inference
+   ```
 
----
+2. **Configure environment**:
+   Copy and edit the example files:
+   ```bash
+   cp backend/.env.example .env
+   # Update required variables (see Environment section)
+   ```
 
-## 🔄 Data flow (high level)
+3. **Start the stack**:
+   ```bash
+   docker compose up --build
+   ```
 
-```mermaid
-flowchart LR
-A[Upload WhatsApp export] --> B[Raw files + chunks]
-B --> C[Preprocess + dedupe]
-C --> D[LLM extraction to structured listings]
-D --> E[Create listing_chunks]
-E --> F[Embedding generation]
-F --> G[Qdrant upsert]
-G --> H[RAG retrieval + chat response]
-```
+   The application will be available at `http://localhost` (or the domain configured via `THREADSENSE_DOMAIN`).
 
----
+4. **Default Admin Credentials**:
+   - Use the admin password set in environment variables (default handling improved in recent commits).
 
-## 🚀 Quick start
+### Environment Variables
 
-### 1) Prerequisites
+Create a `.env` file at the project root based on checked-in examples. Key variables include:
 
-- Docker + Docker Compose
-- OpenAI API key
-- Redis URL/token
-- Postgres/Supabase connection URL
-- Qdrant endpoint + API key
+- `OPENROUTER_API_KEY`: API key for LLM extraction and embeddings.
+- `OPENROUTER_BASE_URL`: `https://openrouter.ai/api/v1`
+- `OPENROUTER_CHAT_MODEL`: Recommended `google/gemini-1.5-flash`
+- `OPENROUTER_EMBEDDING_MODEL`: Recommended `openai/text-embedding-3-small`
+- PostgreSQL credentials (`POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`)
+- `THREADSENSE_DOMAIN`: Domain for Caddy (use `localhost` for local development)
+- Authentication and other service-specific settings.
 
-### 2) Configure environment
+### API Highlights
 
-Create a `.env` at repo root:
+- `GET /api/listings/facets` — Live SQL aggregates for filters.
+- `GET /api/listings` — Filtered listings with optional semantic reranking.
+- `POST /api/listings/delete` — Bulk deletion.
+- `GET /api/chat/source/{listing_id}` — Raw WhatsApp source verification.
+- `POST /api/chat` — LangGraph conversational interface.
+- Authentication endpoints for login and admin access.
 
+### Frontend Workflows
+
+- **Search Page** (`/search`): Advanced filtering, pagination, semantic search toggle, bulk delete, and source modals.
+- **Chat Page** (`/chat`): Natural language queries with deterministic listing references.
+- Listing IDs link directly to original chat sources for full traceability.
+
+### Development and Validation
+
+**Frontend**:
 ```bash
-# App
-APP_ENV=production
-DEBUG=false
-
-# OpenAI
-OPENAI_API_KEY=your_openai_key
-OPENAI_EMBEDDING_MODEL=text-embedding-3-small
-
-# Database
-DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/dbname
-DB_POOL_SIZE=5
-DB_MAX_OVERFLOW=5
-DB_POOL_TIMEOUT_SECONDS=30
-DB_POOL_RECYCLE_SECONDS=1800
-
-# Redis / TaskIQ
-REDIS_URL=redis://host:6379/0
-REDIS_TOKEN=
-TASKIQ_RESULT_TTL_SECONDS=3600
-
-# Qdrant
-QDRANT_URL=
-QDRANT_CLUSTER_ENDPOINT=https://<cluster>.<region>.aws.cloud.qdrant.io:6333
-QDRANT_API_KEY=your_qdrant_key
-
-# Ingestion limits
-INGEST_MAX_BYTES=52428800
-INGEST_MAX_RETRIES=3
-
-# Extractor packet tuning
-MESSAGES_PER_PACKET=15
-MAX_CONCURRENT_PACKETS=6
+cd frontend
+npm run typecheck
+npm run build
 ```
 
-### 3) Run with Docker
-
+**Backend**:
 ```bash
+python -m pytest backend/tests/
+```
+
+**Docker**:
+```bash
+docker compose config
 docker compose up --build
 ```
 
-Services started:
+### Technology Stack
 
-- 🌐 API: `http://localhost:8000`
-- 👷 Worker: TaskIQ worker (background processing)
+- **Backend**: FastAPI, SQLAlchemy 2.0, Alembic, Celery, LangGraph, Pydantic
+- **Database**: PostgreSQL with pgvector extension
+- **Vector Search**: Native pgvector (single source of truth)
+- **LLM Provider**: OpenRouter (configurable models)
+- **Frontend**: React, TypeScript, Vite, Tailwind CSS
+- **Parsing**: Rust (maturin/pyo3 integration)
+- **Proxy**: Caddy
+- **Containerization**: Docker Compose
 
-### 4) Frontend (optional local)
+### Project Status
 
-```bash
-cd frontend
-npm install
-npm run dev
-```
+The `inference` branch represents an evolved architecture focused on:
+- PostgreSQL + pgvector as the unified backend (removing external vector stores).
+- Enhanced authentication system.
+- Simplified deployment and reduced operational complexity.
+- Maintained high-fidelity Rust parsing and robust LLM extraction.
 
----
+### Contributing
 
-## 🧪 Development commands
-
-### Backend quality checks
-
-```bash
-uv run ruff check backend/src
-uv run python -m compileall backend/src
-```
-
-### Run tests
-
-```bash
-OPENAI_API_KEY=dummy PYTHONPATH=. uv run pytest
-```
-
-> ℹ️ Some tests/integration paths require reachable Postgres/Redis/Qdrant.
+1. Fork the repository.
+2. Create a feature branch from `inference`.
+3. Make focused, atomic commits.
+4. Ensure all tests pass and run validation commands.
+5. Submit a pull request with clear description and testing steps.
 
 ---
 
-## 📡 Core API endpoints
-
-### `POST /ingest/`
-Upload WhatsApp export for pipeline processing.
-
-- accepted: `.txt`, `.zip`, `.rar`
-- response includes `task_id` and `rawfile_id`
-
-### `POST /chat/`
-Ask natural-language queries over indexed listings.
-
-### `GET /chat/source/{chunk_id}`
-Fetch original source chunk for traceability.
-
-### `GET /health`
-Basic service liveness.
-
----
-
-## ⚙️ Background tasks
-
-- `ingest_raw_file_task` → parses + dedupes incoming file.
-- `preprocess_rawfile_task` → batch LLM extraction into `property_listings` / `listing_chunks`.
-- `embed_property_listing_task` → embeddings + Qdrant upsert.
-
----
-
-## 🧠 Extraction subsystem notes
-
-The extractor is designed for **accuracy + throughput**:
-
-- ✅ batched packet processing (`MESSAGES_PER_PACKET`)
-- ✅ bounded concurrency (`MAX_CONCURRENT_PACKETS` + semaphore)
-- ✅ strict structured output (Pydantic schema)
-- ✅ robust value normalization (price, phone, furnishing, area)
-- ✅ retry with exponential backoff (tenacity)
-- ✅ irrelevance gating and confidence scoring
-
----
-
-## 📦 Qdrant schema conventions
-
-ThreadSense uses named dense vectors:
-
-- Collection: `threadsense_listings`
-- Vector name: `dense`
-
-Ensure the existing collection matches this schema before upserts/retrieval.
-
----
-
-## 🗃️ Database probe parity checks
-
-Use this Alembic preflight command to print the migration-path DB probe **without** applying migrations:
-
-```bash
-alembic -c backend/alembic.ini -x preflight=true upgrade head
-```
-
-The command prints:
-
-- masked `database_url`
-- `current_database()`
-- `current_schema()`
-- `inet_server_addr()`
-- `inet_server_port()`
-
-At runtime, API startup logs print the same fields to compare migration-path and runtime-path targets.
-
----
-
-## 🛠️ Troubleshooting
-
-### 1) Too many DB clients (`MaxClientsInSessionMode`)
-
-- reduce worker concurrency (`--workers`, `--max-async-tasks`)
-- lower DB pool settings and align with Supabase limits
-
-### 2) Qdrant bad request (`Not existing vector name`)
-
-- verify collection vector schema uses named vector `dense`
-- ensure upserts use `{ "dense": vector }`
-
-### 3) Too many null extractions
-
-- validate `OPENAI_API_KEY`
-- inspect worker logs for parsing failures
-- tune `MESSAGES_PER_PACKET` / `MAX_CONCURRENT_PACKETS`
-
----
-
-## 🔐 Security & ops recommendations
-
-- Keep secrets in environment variables or secret manager.
-- Do not commit `.env`.
-- Rotate API keys periodically.
-- Add per-environment observability (structured logs, error alerts).
-
----
-
-## 🗺️ Roadmap ideas
-
-- Hybrid retrieval (dense + sparse) for harder matching
-- Better multilingual extraction
-- Listing change detection / dedupe across historical uploads
-- Fine-grained confidence calibration + QA dashboards
-
----
-
-## 🤝 Contributing
-
-1. Create feature branch.
-2. Make small, focused commits.
-3. Run lint/tests.
-4. Open PR with clear validation steps.
-
----
-
-## 📄 License
-
-Internal / project-specific (add official license file if open-sourcing).
+**License**: This project is for personal and internal use. Contact the maintainer for licensing questions.

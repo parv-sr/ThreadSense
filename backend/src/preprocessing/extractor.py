@@ -8,6 +8,7 @@ from typing import Any, Sequence
 from uuid import UUID
 
 import structlog
+from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field, field_validator, model_validator
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
@@ -22,9 +23,6 @@ MAX_CONCURRENT_PACKETS = max(3, int(os.getenv("MAX_CONCURRENT_PACKETS", "6")))
 
 
 class ExtractionPropertyType(StrEnum):
-    SALE = "SALE"
-    RENT = "RENT"
-    OTHER = "OTHER"
     RESIDENTIAL = "RESIDENTIAL"
     COMMERCIAL = "COMMERCIAL"
     PLOT = "PLOT"
@@ -35,19 +33,28 @@ class ExtractionPropertyType(StrEnum):
 class ExtractionListingIntent(StrEnum):
     OFFER = "OFFER"
     REQUEST = "REQUEST"
+    UNKNOWN = "UNKNOWN"
 
 
 class ExtractionTransactionType(StrEnum):
     RENT = "RENT"
     SALE = "SALE"
+    LEASE = "LEASE"
+    UNKNOWN = "UNKNOWN"
 
 
 class ExtractionFurnished(StrEnum):
-    FULLY_FURNISHED = "FULLY_FURNISHED"
-    FURNISHED = "FURNISHED"
-    SEMI_FURNISHED = "SEMI_FURNISHED"
+    FULLY_FURNISHED = "FULLY-FURNISHED"
+    SEMI_FURNISHED = "SEMI-FURNISHED"
     UNFURNISHED = "UNFURNISHED"
     UNKNOWN = "UNKNOWN"
+
+
+class ExtractionPriceStatus(StrEnum):
+    EXACT = "EXACT"
+    RANGE = "RANGE"
+    CALL_FOR_PRICE = "CALL_FOR_PRICE"
+    MARKET_PRICE = "MARKET_PRICE"
 
 
 class PropertyListing(BaseModel):
@@ -56,11 +63,17 @@ class PropertyListing(BaseModel):
     transaction_type: ExtractionTransactionType = Field(default=ExtractionTransactionType.SALE)
     property_type: ExtractionPropertyType = Field(default=ExtractionPropertyType.UNKNOWN)
     location: str | None = None
+    canonical_location: str | None = None
     building_name: str | None = None
     bhk: float | None = None
     sqft: int | None = None
     price: int | None = Field(default=None, description="Normalized INR rupee amount")
+    price_min: int | None = Field(default=None, description="Minimum normalized INR amount when a range is present")
+    price_max: int | None = Field(default=None, description="Maximum normalized INR amount when a range is present")
+    price_status: ExtractionPriceStatus = Field(default=ExtractionPriceStatus.CALL_FOR_PRICE)
     furnishing: ExtractionFurnished | None = None
+    pets_allowed: bool | None = None
+    suspicious_flags: list[str] = Field(default_factory=list)
     parking: int | None = None
     features: list[str] = Field(default_factory=list)
     contact_numbers: list[str] = Field(default_factory=list)
@@ -124,10 +137,14 @@ class PropertyListing(BaseModel):
         if has_sale and not has_rent:
             return ExtractionTransactionType.SALE
         if has_rent and has_sale:
+            if "lease" in raw or "license" in raw:
+                return ExtractionTransactionType.LEASE
             if any(term in raw for term in ["per month", "/month", "pm", "deposit"]):
                 return ExtractionTransactionType.RENT
             return ExtractionTransactionType.SALE
-        return ExtractionTransactionType.SALE
+        if "lease" in raw or "license" in raw:
+            return ExtractionTransactionType.LEASE
+        return ExtractionTransactionType.UNKNOWN
 
     @field_validator("property_type", mode="before")
     @classmethod
@@ -241,7 +258,7 @@ class PropertyListing(BaseModel):
         if "FULL" in s:
             return ExtractionFurnished.FULLY_FURNISHED
         if s == "FURNISHED":
-            return ExtractionFurnished.FURNISHED
+            return ExtractionFurnished.FULLY_FURNISHED
         if "SEMI" in s:
             return ExtractionFurnished.SEMI_FURNISHED
         if "UNFURNISHED" in s or "EMPTY" in s or "BARE" in s:
@@ -325,17 +342,23 @@ class PropertyListing(BaseModel):
 
 
 class ListingExtractionResult(BaseModel):
-    """Canonical extractor output mapped to v2 DB columns."""
+    """Canonical extractor output mapped to the ThreadSense inventory schema."""
 
     property_type: ExtractionPropertyType = Field(default=ExtractionPropertyType.UNKNOWN)
     listing_intent: ExtractionListingIntent = Field(default=ExtractionListingIntent.OFFER)
-    transaction_type: ExtractionTransactionType = Field(default=ExtractionTransactionType.SALE)
+    transaction_type: ExtractionTransactionType = Field(default=ExtractionTransactionType.UNKNOWN)
     bhk: float | None = Field(default=None)
     price: int | None = Field(default=None)
+    price_min: int | None = Field(default=None)
+    price_max: int | None = Field(default=None)
+    price_status: ExtractionPriceStatus = Field(default=ExtractionPriceStatus.CALL_FOR_PRICE)
     location: str | None = None
+    canonical_location: str | None = None
     building_name: str | None = None
     contact_number: str | None = None
     furnished: ExtractionFurnished | None = None
+    pets_allowed: bool | None = None
+    suspicious_flags: list[str] = Field(default_factory=list)
     floor_number: int | None = None
     total_floors: int | None = None
     area_sqft: int | None = None
@@ -357,6 +380,12 @@ class ListingExtractionResult(BaseModel):
             payload["area_sqft"] = payload.get("sqft")
         if payload.get("furnished") is None and payload.get("furnishing") is not None:
             payload["furnished"] = payload.get("furnishing")
+        if payload.get("price_min") is None and payload.get("price") is not None:
+            payload["price_min"] = payload.get("price")
+        if payload.get("price_max") is None and payload.get("price") is not None:
+            payload["price_max"] = payload.get("price")
+        if payload.get("price_status") is None:
+            payload["price_status"] = "EXACT" if payload.get("price") is not None else "CALL_FOR_PRICE"
         if payload.get("contact_number") is None and payload.get("contact_numbers"):
             phones = payload.get("contact_numbers")
             if isinstance(phones, list) and phones:
@@ -423,13 +452,34 @@ def _extract_location_from_text(raw_text: str) -> str | None:
     return None
 
 
+def _canonicalize_location(location: str | None) -> str | None:
+    if not location:
+        return None
+    text = re.sub(r"\s+", " ", location).strip().lower()
+    text = text.replace(" west", " w").replace(" east", " e")
+    text = re.sub(r"[^a-z0-9 ]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    aliases: dict[str, str] = {
+        "bandra w": "bandra west",
+        "bandra west": "bandra west",
+        "bandra e": "bandra east",
+        "bandra east": "bandra east",
+        "khar w": "khar west",
+        "khar west": "khar west",
+        "khar e": "khar east",
+        "khar east": "khar east",
+        "bkc": "bkc",
+    }
+    return aliases.get(text, text) or None
+
+
 def _estimate_confidence(extraction: ListingExtractionResult, raw_text: str) -> float:
     score: float = 0.2
     if extraction.location:
         score += 0.2
-    if extraction.price is not None:
+    if extraction.price is not None and extraction.price > 100:
         score += 0.2
-    if extraction.bhk is not None:
+    if extraction.bhk is not None and extraction.bhk < 20:
         score += 0.15
     if extraction.contact_number:
         score += 0.15
@@ -439,6 +489,7 @@ def _estimate_confidence(extraction: ListingExtractionResult, raw_text: str) -> 
         score += 0.05
     if len(raw_text.strip()) < 20:
         score -= 0.15
+        
     return max(0.0, min(1.0, round(score, 2)))
 
 
@@ -449,6 +500,15 @@ def _enrich_extraction(extraction: ListingExtractionResult, raw_text: str) -> Li
         extraction.bhk = _extract_bhk_from_text(raw_text)
     if extraction.location is None:
         extraction.location = _extract_location_from_text(raw_text)
+    if extraction.canonical_location is None:
+        extraction.canonical_location = _canonicalize_location(extraction.location)
+    if extraction.price is not None:
+        extraction.price_min = extraction.price_min or extraction.price
+        extraction.price_max = extraction.price_max or extraction.price
+        if extraction.price_status == ExtractionPriceStatus.CALL_FOR_PRICE:
+            extraction.price_status = ExtractionPriceStatus.EXACT
+    elif extraction.price_min is not None or extraction.price_max is not None:
+        extraction.price_status = ExtractionPriceStatus.RANGE
     if extraction.confidence_score <= 0.0:
         extraction.confidence_score = _estimate_confidence(extraction, raw_text)
     return extraction
@@ -468,7 +528,8 @@ def _build_system_prompt() -> str:
     schema = BatchEnvelope.model_json_schema()
     return f"""
 **ROLE**
-You are ThreadSense, an expert extraction engine for Indian real-estate WhatsApp messages. 
+You are given one WhatsApp message. Fill the JSON schema exactly. Use null for missing values. Never invent data.
+You are ThreadSense, an expert extraction engine for Indian real-estate WhatsApp messages.
 Transform noisy, informal text into structured data. Maximize recall without hallucinating missing fields.
 
 **STRICT OUTPUT CONTRACT**
@@ -484,7 +545,7 @@ Transform noisy, informal text into structured data. Maximize recall without hal
 4. Location: Extract specific micro-markets or building names (e.g., 'Bandra West', 'Lodha Bellissimo'). Strip generic city names like 'Mumbai'.
 5. Specs: Map 'Studio' or '1 RK' to `0.5` BHK. 
 6. Contact: Extract 10-to-12 digit phone numbers. Strip spaces and country codes (e.g., '+91').
-7. Enums: Map strictly to the explicit values defined in the SCHEMA below. DO NOT use any other word, except the ones defined in the enums (e.g., FULLY_FURNISHED).
+7. Enums: Map strictly to the explicit values defined in the SCHEMA below. DO NOT use any other word, except the ones defined in the enums (e.g., FULLY-FURNISHED).
 8. Confidence (0.0-1.0): Score based on clarity. Deduct points for missing price, location, or BHK.
 
 **SCHEMA (REFERENCE)**
@@ -521,9 +582,19 @@ class ListingExtractor:
         self._system_prompt = _build_system_prompt()
 
         self._model = ChatOpenAI(
-            model="gpt-4o-mini",
+            model=settings.openrouter_chat_model,
             temperature=0.0,
-            api_key=settings.openai_api_key,
+            api_key=settings.openrouter_api_key,
+            base_url=settings.openrouter_base_url,
+            default_headers={
+                "HTTP-Referer": "https://threadsense.local",
+                "X-Title": "ThreadSense",
+            },
+            model_kwargs={
+                "extra_body": {
+                    "cache_control": {"type": "ephemeral"}
+                }
+            }
         )
         self._structured_model = self._model.with_structured_output(BatchEnvelope, method="json_mode")
         self._single_structured_model = self._model.with_structured_output(PropertyListing, method="function_calling")
@@ -536,9 +607,12 @@ class ListingExtractor:
     )
     async def _invoke_packet(self, packet_messages: Sequence[str]) -> BatchEnvelope:
         prompt_user = construct_batch_prompt(packet_messages)
-        full_prompt = f"SYSTEM INSTRUCTIONS:\n{self._system_prompt}\n\nUSER INPUT:\n{prompt_user}"
+        messages = [
+            SystemMessage(content=[{"type": "text", "text": self._system_prompt, "cache_control": {"type": "ephemeral"}}]),
+            HumanMessage(content=prompt_user)
+        ]
         async with self._semaphore:
-            return await self._structured_model.ainvoke(full_prompt)
+            return await self._structured_model.ainvoke(messages)
 
     async def _process_packet(
         self,
@@ -623,7 +697,6 @@ class ListingExtractor:
         if not chunks:
             return [], {}
 
-        chunk_ids: list[UUID] = [chunk_id for chunk_id, _ in chunks]
         message_texts: list[str] = [(cleaned_text or "")[:6000] for _, cleaned_text in chunks]
         raw_outputs: dict[str, str] = {}
         extracted_rows: list[tuple[UUID, ListingExtractionResult | None]] = []
@@ -686,19 +759,28 @@ def to_embedding_text(extraction: ListingExtractionResult, original_text: str) -
     fields.append(f"PropertyType: {extraction.property_type}")
     fields.append(f"Intent: {extraction.listing_intent}")
     fields.append(f"Transaction: {extraction.transaction_type}")
+    fields.append(f"TransactionType: {extraction.transaction_type}")
+    fields.append(f"ListingIntent: {extraction.listing_intent}")
+    fields.append(f"PriceStatus: {extraction.price_status}")
 
     if extraction.bhk is not None:
         fields.append(f"BHK: {extraction.bhk}")
     if extraction.price is not None:
         fields.append(f"Price: {extraction.price} INR")
+    if extraction.price_min is not None or extraction.price_max is not None:
+        fields.append(f"PriceRange: {extraction.price_min or 'N/A'}-{extraction.price_max or 'N/A'} INR")
     if extraction.location:
         fields.append(f"Location: {extraction.location}")
+    if extraction.canonical_location:
+        fields.append(f"CanonicalLocation: {extraction.canonical_location}")
     if extraction.building_name:
         fields.append(f"Building: {extraction.building_name}")
     if extraction.area_sqft:
         fields.append(f"Area: {extraction.area_sqft} sqft")
     if extraction.furnished:
         fields.append(f"Furnished: {extraction.furnished}")
+    if extraction.pets_allowed is not None:
+        fields.append(f"PetsAllowed: {extraction.pets_allowed}")
     if extraction.parking is not None:
         fields.append(f"Parking: {extraction.parking}")
     if extraction.features:

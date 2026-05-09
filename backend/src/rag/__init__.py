@@ -1,3 +1,1 @@
-from backend.src.rag.agent import RAGAgent
-
-__all__ = ["RAGAgent"]
+__all__: list[str] = []

@@ -30,10 +30,22 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    app_name: str = "ThreadSense v2"
+    app_name: str = "ThreadSense Ultimate"
     app_env: str = Field(default="dev", alias="APP_ENV")
     debug: bool = Field(default=False, alias="DEBUG")
-    openai_api_key: str = Field(..., alias="OPENAI_API_KEY")
+    openrouter_api_key: str = Field(default="", alias="OPENROUTER_API_KEY")
+    openrouter_base_url: str = Field(
+        default="https://openrouter.ai/api/v1",
+        alias="OPENROUTER_BASE_URL",
+    )
+    openrouter_chat_model: str = Field(
+        default="google/gemini-3-flash-preview",
+        alias="OPENROUTER_CHAT_MODEL",
+    )
+    openrouter_embedding_model: str = Field(
+        default="openai/text-embedding-3-small",
+        alias="OPENROUTER_EMBEDDING_MODEL",
+    )
 
     database_url: str = Field(
         default="postgresql+asyncpg://postgres:postgres@postgres:5432/threadsense",
@@ -42,7 +54,7 @@ class Settings(BaseSettings):
 
     redis_url: str = Field(default="redis://localhost:6379/0", alias="REDIS_URL")
     redis_token: str | None = Field(default=None, alias="REDIS_TOKEN")
-    taskiq_result_ttl_seconds: int = Field(default=3600, alias="TASKIQ_RESULT_TTL_SECONDS")
+    celery_result_ttl_seconds: int = Field(default=3600, alias="CELERY_RESULT_TTL_SECONDS")
     ingest_max_bytes: int = Field(default=50 * 1024 * 1024, alias="INGEST_MAX_BYTES")
     ingest_max_retries: int = Field(default=3, alias="INGEST_MAX_RETRIES")
     db_pool_size: int = Field(default=5, alias="DB_POOL_SIZE")
@@ -51,15 +63,11 @@ class Settings(BaseSettings):
     db_pool_recycle_seconds: int = Field(default=1800, alias="DB_POOL_RECYCLE_SECONDS")
 
     llm_batch_size: int = Field(default=50, alias="LLM_BATCH_SIZE")
+    rag_enable_llm_grading: bool = Field(default=False, alias="RAG_ENABLE_LLM_GRADING")
 
-    openai_embedding_model: str = Field(default="text-embedding-3-small", alias="OPENAI_EMBEDDING_MODEL")
-    qdrant_url: str | None = Field(default=None, alias="QDRANT_URL")
-    qdrant_cluster_endpoint: str | None = Field(default=None, alias="QDRANT_CLUSTER_ENDPOINT")
-    qdrant_api_key: str | None = Field(default=None, alias="QDRANT_API_KEY")
-
-    @property
-    def qdrant_endpoint(self) -> str:
-        return (self.qdrant_cluster_endpoint or self.qdrant_url or "http://localhost:6333").strip()
+    threadsense_admin_key: str = Field(default="change-me", alias="THREADSENSE_ADMIN_KEY")
+    threadsense_admin_username: str = Field(default="admin", alias="THREADSENSE_ADMIN_USERNAME")
+    threadsense_admin_password: str = Field(default="admin", alias="THREADSENSE_ADMIN_PASSWORD")
 
     @property
     def redis_broker_url(self) -> str:

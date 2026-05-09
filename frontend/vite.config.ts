@@ -7,18 +7,22 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // Using Vite proxy so we don't need CORS in development.
-      '/chat': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-        secure: false,
-      },
-      // Using Vite proxy so we don't need CORS in development.
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
         secure: false,
+        timeout: 0,
+        proxyTimeout: 0,
+        configure: (proxy) => {
+          proxy.on('proxyRes', (proxyRes, req) => {
+            if (req.url?.endsWith('/stream')) {
+              proxyRes.headers['cache-control'] = 'no-cache'
+              proxyRes.headers['x-accel-buffering'] = 'no'
+            }
+          })
+        },
       },
+
     },
   },
   resolve: {

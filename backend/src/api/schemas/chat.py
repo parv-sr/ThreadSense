@@ -10,6 +10,7 @@ class ChatRequest(BaseModel):
 
     message: str = Field(min_length=1, max_length=6000)
     thread_id: str | None = Field(default=None, description="Optional thread UUID for memory continuity")
+    use_llm_grading: bool | None = Field(default=None, description="Whether to use LLM for grading")
 
 
 class RAGResponse(BaseModel):
@@ -29,6 +30,7 @@ class ChatResponse(RAGResponse):
 class SourceResponse(BaseModel):
     """Full raw source chunk details for View Source actions."""
 
+    listing_id: str
     chunk_id: str
     message_start: datetime | None
     sender: str | None

@@ -6,11 +6,9 @@ import structlog
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from backend.src.api.endpoints.chat import build_rag_agent
 from backend.src.api.main_router import api_router
 from backend.src.core.config import get_settings
-from backend.src.db.diagnostics import PROBE_SQL, mask_database_url
-from backend.src.db.session import engine
+from backend.src.db.diagnostics import mask_database_url
 from backend.src.startup import initialize_infrastructure
 from backend.src.tasks import broker
 
@@ -28,54 +26,53 @@ def configure_logging() -> None:
 
 
 configure_logging()
-logger = structlog.get_logger(__name__)
+log = structlog.get_logger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # ── Stage 1: Database migrations ──────────────────────────────────────
     await initialize_infrastructure()
 
+    # ── Stage 2: Celery broker connection ─────────────────────────────────
     await broker.startup()
-    logger.info("taskiq_started", redis_url=settings.redis_broker_url)
-    logger.info("database_runtime_config", database_url=mask_database_url(settings.database_url))
+    log.info("broker_connected", redis_url=settings.redis_broker_url)
 
-    async with engine.connect() as conn:
-        probe_row = (await conn.execute(PROBE_SQL)).one()
-        logger.info(
-            "database_runtime_probe",
-            current_database=probe_row[0],
-            current_schema=probe_row[1],
-            inet_server_addr=str(probe_row[2]) if probe_row[2] is not None else None,
-            inet_server_port=probe_row[3],
-        )
-
+    # ── Stage 3: Orphan recovery ──────────────────────────────────────────
     try:
-        app.state.rag_agent = build_rag_agent()
-        logger.info("rag_agent_ready")
+        from backend.src.tasks.recovery import recover_orphaned_tasks
+        await recover_orphaned_tasks()
     except Exception as exc:  # noqa: BLE001
-        app.state.rag_agent = None
-        logger.exception("rag_agent_init_failed", error=str(exc))
+        log.error("orphan_recovery_failed", error=str(exc))
+
+    # ── Stage 4: Ready ────────────────────────────────────────────────────
+    log.info(
+        "startup_ready",
+        database=mask_database_url(settings.database_url),
+        llm_model=settings.openrouter_chat_model,
+        embedding_model=settings.openrouter_embedding_model,
+    )
 
     try:
         yield
     finally:
         await broker.shutdown()
-        logger.info("taskiq_shutdown")
+        log.info("shutdown_complete")
 
 
 app = FastAPI(title=settings.app_name, debug=settings.debug, lifespan=lifespan)
-app.include_router(api_router)
+app.include_router(api_router, prefix="/api")
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
+async def health(request: Request) -> dict[str, str]:
     return {"status": "ok", "service": settings.app_name}
 
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(_: Request, exc: Exception) -> JSONResponse:
-    logger.exception("unhandled_exception", error=str(exc))
+    log.exception("unhandled_exception", error=str(exc))
     return JSONResponse(
         status_code=500,
-        content={"detail": "Internal server error", "error": str(exc)},
+        content={"status": "error", "message": "An internal server error occurred."},
     )

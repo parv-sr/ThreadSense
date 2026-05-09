@@ -11,21 +11,23 @@ from langchain_core.tools import tool
 
 from backend.src.db.session import AsyncSessionLocal
 from backend.src.models.ingestion import RawMessageChunk
-from backend.src.rag.retriever import HybridQdrantRetriever
+from backend.src.models.preprocessing import PropertyListing
+from backend.src.rag.retriever import PgvectorListingRetriever
 from backend.src.rag.utils import extract_chunk_id
 
 logger = structlog.get_logger(__name__)
 
-_retriever_ctx: ContextVar[HybridQdrantRetriever | None] = ContextVar("retriever_ctx", default=None)
+_retriever_ctx: ContextVar[PgvectorListingRetriever | None] = ContextVar("retriever_ctx", default=None)
 _docs_ctx: ContextVar[list[Document]] = ContextVar("docs_ctx", default=[])
 _hybrid_retrieve_calls_ctx: ContextVar[int] = ContextVar("hybrid_retrieve_calls_ctx", default=0)
 
 
-def set_retriever_context(retriever: HybridQdrantRetriever) -> None:
+def set_retriever_context(retriever: PgvectorListingRetriever) -> None:
     """Bind retriever to the current async context for tool execution."""
 
     _retriever_ctx.set(retriever)
     _hybrid_retrieve_calls_ctx.set(0)
+    logger.debug("tool_retriever_context_set")
 
 
 def clear_retriever_context() -> None:
@@ -34,6 +36,7 @@ def clear_retriever_context() -> None:
     _retriever_ctx.set(None)
     _docs_ctx.set([])
     _hybrid_retrieve_calls_ctx.set(0)
+    logger.debug("tool_retriever_context_cleared")
 
 
 def _coerce_docs(docs: list[Document] | None) -> list[Document]:
@@ -80,23 +83,29 @@ def set_cached_docs(docs: list[Document]) -> None:
     """Persist docs for deterministic/fallback response generation."""
 
     _docs_ctx.set(docs)
+    logger.debug("tool_docs_cached", count=len(docs))
 
 
 @tool("hybrid_retrieve", parse_docstring=True)
-async def hybrid_retrieve(query: str, filters: dict | None = None) -> list[Document]:
-    """Run real hybrid retrieval against Qdrant using dense + sparse retrieval and metadata filters.
+async def hybrid_retrieve(
+    query: str,
+    filters: dict[str, Any] | None = None,
+    parsed_filters: dict[str, Any] | None = None,
+) -> list[Document]:
+    """Run retrieval against PostgreSQL/pgvector using SQL filters before vector ordering.
 
     Args:
         query: Search query describing desired property listings.
         filters: Optional metadata constraints such as bhk, location, sender, and min/max price.
+        parsed_filters: Optional deterministic filters from ParsedQuery; when present regex parsing is skipped.
 
     Returns:
-        Ranked listing documents from Qdrant.
+        Ranked listing documents from PostgreSQL.
     """
 
     retriever = _retriever_ctx.get(None)
     if retriever is None:
-        raise RuntimeError("Hybrid retriever context is not initialized")
+        retriever = PgvectorListingRetriever()
 
     calls_so_far: int = _hybrid_retrieve_calls_ctx.get(0)
     _hybrid_retrieve_calls_ctx.set(calls_so_far + 1)
@@ -111,7 +120,18 @@ async def hybrid_retrieve(query: str, filters: dict | None = None) -> list[Docum
         )
         return cached_docs
 
-    docs = await retriever.retrieve(query=query, filters=filters, limit=20)
+    logger.info(
+        "tool_hybrid_retrieve_start",
+        query=query,
+        filters=filters,
+        parsed_filters=parsed_filters,
+    )
+    docs = await retriever.retrieve(
+        query=query,
+        filters=filters,
+        parsed_filters=parsed_filters,
+        limit=10,
+    )
     _docs_ctx.set(docs)
     logger.info("tool_hybrid_retrieve", query=query, filters=filters, count=len(docs))
     return docs
@@ -133,17 +153,17 @@ async def filter_listings(docs: list[Document], criteria: dict) -> list[Document
     output: list[Document] = []
 
     for doc in candidates:
-        metadata = doc.metadata or {}
-        include = True
+        metadata: dict[str, Any] = doc.metadata or {}
+        include: bool = True
         for key, value in (criteria or {}).items():
             if value is None:
                 continue
             if key == "min_price":
-                if float(metadata.get("price_numeric") or 0.0) < float(value):
+                if float(metadata.get("price_min") or metadata.get("price") or 0.0) < float(value):
                     include = False
                     break
             elif key == "max_price":
-                if float(metadata.get("price_numeric") or 0.0) > float(value):
+                if float(metadata.get("price_max") or metadata.get("price") or 0.0) > float(value):
                     include = False
                     break
             elif not _matches_scalar(metadata.get(key, ""), value, key):
@@ -158,27 +178,35 @@ async def filter_listings(docs: list[Document], criteria: dict) -> list[Document
 
 
 @tool("get_listing_details", parse_docstring=True)
-async def get_listing_details(chunk_id: str) -> dict[str, Any]:
-    """Retrieve full original `RawMessageChunk` from PostgreSQL by chunk UUID.
+async def get_listing_details(listing_id: str) -> dict[str, Any]:
+    """Retrieve full original `RawMessageChunk` from PostgreSQL by listing UUID.
 
     Args:
-        chunk_id: UUID of the underlying raw message chunk.
+        listing_id: UUID of the property listing.
 
     Returns:
         Full source payload suitable for source inspection.
     """
 
     try:
-        parsed_id = UUID(chunk_id)
+        parsed_id = UUID(listing_id)
     except ValueError:
-        return {"error": "Invalid chunk_id", "chunk_id": chunk_id}
+        return {"error": "Invalid listing_id", "listing_id": listing_id}
 
     async with AsyncSessionLocal() as session:
-        chunk = await session.get(RawMessageChunk, parsed_id)
-        if chunk is None:
-            return {"error": "chunk not found", "chunk_id": chunk_id}
+        listing = await session.get(PropertyListing, parsed_id)
+        if listing is None:
+            logger.info("tool_get_listing_details_missing", listing_id=listing_id)
+            return {"error": "listing not found", "listing_id": listing_id}
 
+        chunk = await session.get(RawMessageChunk, listing.raw_chunk_id)
+        if chunk is None:
+            logger.info("tool_get_listing_details_source_missing", listing_id=listing_id)
+            return {"error": "source chunk not found", "listing_id": listing_id}
+
+        logger.info("tool_get_listing_details_hit", listing_id=listing_id, chunk_id=str(chunk.id))
         return {
+            "listing_id": str(listing.id),
             "chunk_id": str(chunk.id),
             "message_start": chunk.message_start.isoformat() if chunk.message_start else None,
             "sender": chunk.sender,
@@ -202,6 +230,7 @@ async def summarize_listings(docs: list[Document]) -> str:
 
     candidates = _coerce_docs(docs)
     if not candidates:
+        logger.info("tool_summarize_listings_empty")
         return "No listings are available to summarize."
 
     locations = Counter(str(doc.metadata.get("location", "Unknown")) for doc in candidates)
@@ -225,17 +254,19 @@ async def compare_listings(listing_ids: list[str]) -> str:
 
     docs = _docs_ctx.get([])
     ids = {str(item) for item in listing_ids}
-    matched = [doc for doc in docs if extract_chunk_id(doc) in ids]
+    matched = [doc for doc in docs if str((doc.metadata or {}).get("listing_id") or extract_chunk_id(doc)) in ids]
     if not matched:
+        logger.info("tool_compare_listings_no_match", requested_ids=list(ids), available_count=len(docs))
         return "No matching listing IDs were found in the active results."
 
     lines: list[str] = []
     for doc in matched:
         metadata = doc.metadata or {}
-        cid = extract_chunk_id(doc)
+        cid = str(metadata.get("listing_id") or extract_chunk_id(doc))
         lines.append(
             f"{cid}: {metadata.get('bhk', 'N/A')} | {metadata.get('location', 'N/A')} | {metadata.get('price', 'N/A')}"
         )
+    logger.info("tool_compare_listings_complete", requested_ids=list(ids), matched_count=len(matched))
     return " ; ".join(lines)
 
 

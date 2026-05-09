@@ -24,7 +24,7 @@ config.set_main_option(
     "sqlalchemy.url",
     os.environ.get(
         "DATABASE_URL",
-        "postgresql+asyncpg://postgres:postgres@postgres:5432/threadsense",
+        "postgresql+asyncpg://threadsense:threadsense@db:5432/threadsense",
     ),
 )
 
@@ -49,7 +49,7 @@ async def run_async_migrations() -> None:
     connectable = create_async_engine(database_url)
     x_args = context.get_x_argument(as_dictionary=True)
 
-    async with connectable.connect() as connection:
+    async with connectable.begin() as connection:
         probe_row = (await connection.execute(PROBE_SQL)).one()
         print(
             "[alembic-db-probe]",
@@ -66,14 +66,15 @@ async def run_async_migrations() -> None:
             await connectable.dispose()
             return
 
-        await connection.run_sync(
-            lambda conn: context.configure(
+        def do_run_migrations(conn):
+            context.configure(
                 connection=conn,
                 target_metadata=target_metadata,
             )
-        )
+            with context.begin_transaction():
+                context.run_migrations()
 
-        await connection.run_sync(lambda conn: context.run_migrations())
+        await connection.run_sync(do_run_migrations)
 
     await connectable.dispose()
 

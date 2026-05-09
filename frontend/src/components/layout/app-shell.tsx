@@ -1,12 +1,23 @@
-import { Outlet } from 'react-router-dom'
+import { Outlet, useNavigation } from 'react-router-dom'
 import { Sidebar } from './sidebar'
 
-export const AppShell = () => (
-  <div className='mx-auto flex min-h-screen w-full max-w-[1600px] flex-col gap-4 p-3 text-slate-100 md:flex-row md:p-5'>
-    <Sidebar />
-    <main className='glass-panel relative flex-1 overflow-hidden rounded-3xl p-4 md:p-8'>
-      <div className='pointer-events-none absolute inset-0 -z-10 opacity-60 [background:linear-gradient(120deg,rgba(59,130,246,0.08),transparent_40%,rgba(56,189,248,0.08))]' />
-      <Outlet />
-    </main>
-  </div>
-)
+export const AppShell = () => {
+  const navigation = useNavigation()
+  const isNavigating = navigation.state === 'loading'
+
+  return (
+    <div className='min-h-screen bg-zinc-950 text-zinc-100'>
+      <div className='mx-auto flex min-h-screen w-full max-w-[1800px] flex-col gap-4 p-3 md:flex-row md:p-5'>
+      <Sidebar />
+      <main className='relative flex-1 overflow-hidden border border-zinc-800 bg-zinc-950 p-4 md:p-6'>
+        {isNavigating && (
+          <div className='absolute inset-0 z-50 flex items-center justify-center bg-zinc-950/60 backdrop-blur-sm'>
+            <div className='h-8 w-8 animate-spin rounded-full border-4 border-cyan-400 border-t-transparent' />
+          </div>
+        )}
+        <Outlet />
+      </main>
+      </div>
+    </div>
+  )
+}

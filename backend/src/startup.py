@@ -1,84 +1,66 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import structlog
 from alembic import command
 from alembic.config import Config
-from qdrant_client import QdrantClient
-from qdrant_client.http.models import Distance, VectorParams
 
-from backend.src.core.config import get_settings
-from backend.src.embeddings.constants import QDRANT_COLLECTION, QDRANT_VECTOR_NAME
-
-logger = structlog.get_logger(__name__)
-settings = get_settings()
-
-VECTOR_SIZE = 1536
+log = structlog.get_logger(__name__)
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _run_alembic_upgrade() -> None:
-    alembic_cfg = Config("backend/alembic.ini")
+    alembic_cfg = Config(str(BACKEND_ROOT / "alembic.ini"))
     command.upgrade(alembic_cfg, "head")
 
 
 async def run_migrations() -> None:
-    logger.info("startup_migrations_begin")
+    log.info("migrations_running")
     await asyncio.to_thread(_run_alembic_upgrade)
-    logger.info("startup_migrations_done")
+    log.info("migrations_applied")
 
 
-def ensure_qdrant_collection() -> None:
-    logger.info("startup_qdrant_ensure_begin", qdrant_url=settings.qdrant_endpoint)
-    client = QdrantClient(
-        url=settings.qdrant_endpoint,
-        api_key=settings.qdrant_api_key,
-        timeout=10,
-    )
-    try:
-        if client.collection_exists(QDRANT_COLLECTION):
-            info = client.get_collection(QDRANT_COLLECTION)
-            vectors_cfg = getattr(info.config.params, "vectors", None)
-            configured_names: set[str] = set()
-            if isinstance(vectors_cfg, dict):
-                configured_names = set(vectors_cfg.keys())
-            elif vectors_cfg is not None:
-                # Single unnamed vector config should be rejected for this app.
-                configured_names = {""}
+async def create_superuser() -> None:
+    from backend.src.core.config import get_settings
+    from backend.src.db.session import AsyncSessionLocal
+    from backend.src.models.users import User
+    from backend.src.api.auth_config import UserManager, UserCreate
+    from fastapi_users_db_sqlalchemy import SQLAlchemyUserDatabase
 
-            if QDRANT_VECTOR_NAME not in configured_names:
-                raise RuntimeError(
-                    "Qdrant collection exists with incompatible vector schema. "
-                    f"Expected named vector '{QDRANT_VECTOR_NAME}', found {sorted(configured_names)}."
-                )
-            logger.info(
-                "startup_qdrant_collection_exists",
-                collection=QDRANT_COLLECTION,
-                vector_name=QDRANT_VECTOR_NAME,
+    settings = get_settings()
+    async with AsyncSessionLocal() as session:
+        user_db = SQLAlchemyUserDatabase(session, User)
+        user_manager = UserManager(user_db)
+        
+        email = f"{settings.threadsense_admin_username}@threadsense.com"
+        # Just use the username config for email login if they use standard forms
+        # fastapi-users uses email as the primary login identifier
+        existing = await user_db.get_by_email(email)
+        if not existing:
+            user_create = UserCreate(
+                email=email,
+                password=settings.threadsense_admin_password,
+                is_superuser=True,
+                is_active=True,
+                is_verified=True,
+                username=settings.threadsense_admin_username,
+                display_name="Administrator",
             )
-            return
-
-        client.create_collection(
-            collection_name=QDRANT_COLLECTION,
-            vectors_config={
-                QDRANT_VECTOR_NAME: VectorParams(
-                    size=VECTOR_SIZE,
-                    distance=Distance.COSINE,
-                )
-            },
-        )
-        logger.info(
-            "startup_qdrant_collection_created",
-            collection=QDRANT_COLLECTION,
-            vector_name=QDRANT_VECTOR_NAME,
-        )
-    finally:
-        client.close()
+            await user_manager.create(user_create)
+            log.info("superuser_created", email=email)
+        else:
+            if not existing.is_superuser or not existing.is_verified:
+                existing.is_superuser = True
+                existing.is_verified = True
+                await session.commit()
+                log.info("superuser_updated", email=email)
 
 
 async def initialize_infrastructure() -> None:
     await run_migrations()
-    await asyncio.to_thread(ensure_qdrant_collection)
+    await create_superuser()
 
 
 if __name__ == "__main__":

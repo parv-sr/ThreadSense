@@ -1,0 +1,197 @@
+// Corresponds to: _build_progress_payload() in backend/src/api/endpoints/ingestion.py
+export interface ProgressPayload {
+  status: 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED'
+  percentage: number
+  stage: string
+  message: string
+  terminal: boolean
+  should_poll: boolean
+  chunks_total: number
+  chunks_processed: number
+  chunks_failed: number
+  listings_extracted: number
+}
+
+// Corresponds to: _fetch_upload_detail_payload() → listings[] in backend/src/api/endpoints/ingestion.py
+export interface ListingItem {
+  id: string
+  rawChunkId: string
+  sender: string | null
+  timestamp: string | null
+  propertyType: string
+  transactionType: string
+  listingIntent: string
+  location: string | null
+  price: number | null
+  bhk: number | null
+  areaSqft: number | null
+  furnished: string | null
+  landmark: string | null
+  contactNumber: string | null
+  isVerified: boolean
+  status: string
+  confidenceScore: number
+  excerpt: string
+}
+
+// Corresponds to: GET /ingest/uploads → uploads[] in backend/src/api/endpoints/ingestion.py
+export interface UploadSummary {
+  rawfileId: string
+  fileName: string
+  status: string
+  processed: boolean
+  uploadedAt: string
+  processStartedAt: string | null
+  processFinishedAt: string | null
+  notes: string | null
+  source: string | null
+  taskId: string | null
+  dedupeStats: Record<string, unknown>
+  progress: ProgressPayload
+  listingsCount: number
+  averageConfidence: number | null
+}
+
+// Corresponds to: GET /ingest/uploads/{rawfileId} in backend/src/api/endpoints/ingestion.py
+export interface UploadDetail {
+  upload: UploadSummary
+  insights: {
+    headline: string
+    subheadline: string
+    highlights: string[]
+    status_summary: string
+    listings: ListingItem[]
+  }
+  streamedAt: string
+}
+
+// Corresponds to: POST /chat/ request body
+export interface ChatPayload {
+  message: string
+  thread_id?: string
+  use_llm_grading?: boolean
+}
+
+// Corresponds to: POST /chat/ response
+export interface ChatResponse {
+  thread_id: string
+  table_html: string
+  reasoning: string
+  sources: string[]
+}
+
+// Corresponds to: POST /ingest/ response
+export interface IngestResponse {
+  task_id: string
+  rawfile_id: string
+  status: 'QUEUED' | 'ALREADY_EXISTS' | string
+}
+
+export interface ListingResult {
+  id: string
+  transaction_type: string
+  property_type: string
+  listing_intent: string
+  price: number | null
+  price_min: number | null
+  price_max: number | null
+  price_status: string
+  bhk: number | null
+  sqft: number | null
+  location: string | null
+  canonical_location: string | null
+  furnishing: string | null
+  floor_band: string | null
+  price_per_sqft: number | null
+  has_contact: boolean | null
+  pets_allowed: boolean | null
+  suspicious_flags: string[]
+  confidence_score: number
+  sender: string | null
+  timestamp: string | null
+  contact_number: string | null
+  semantic_score: number | null
+}
+
+export interface ListingsResponse {
+  items: ListingResult[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export interface FacetBucket {
+  value: string
+  count: number
+}
+
+export interface ListingFacets {
+  transaction_type: FacetBucket[]
+  property_type: FacetBucket[]
+  canonical_location: FacetBucket[]
+  bhk: FacetBucket[]
+  furnishing: FacetBucket[]
+}
+
+export interface ListingsQuery {
+  transaction_type?: string[]
+  property_type?: string[]
+  listing_intent?: string[]
+  canonical_location?: string
+  furnishing?: string[]
+  bhk?: number[]
+  min_price?: number | ''
+  max_price?: number | ''
+  min_sqft?: number | ''
+  max_sqft?: number | ''
+  floor_band?: string[]
+  price_status?: string[]
+  min_psf?: number | ''
+  max_psf?: number | ''
+  has_contact?: boolean | null
+  pets_allowed?: boolean | null
+  suspicious_only?: boolean | null
+  sender?: string
+  sort_by?: 'recent' | 'price_asc' | 'price_desc' | 'psf_asc' | 'psf_desc'
+  semantic_q?: string
+  limit?: number
+  offset?: number
+}
+
+// Corresponds to: GET /chat/source/{listingId} response
+export interface SourceChunk {
+  listing_id: string
+  chunk_id: string
+  message_start: string | null
+  sender: string | null
+  raw_text: string
+  cleaned_text: string | null
+  status: string
+  created_at: string | null
+}
+
+// Corresponds to: GET /ingest/status/{task_id} response
+export interface TaskStatusResponse {
+  status: 'PENDING' | 'COMPLETED' | 'FAILED' | 'PROCESSING' | string
+  task_id: string
+  progress_percentage?: number
+  result?: Record<string, unknown>
+  error?: string
+}
+
+// Corresponds to: dedupe_stats dict from backend DedupeStats dataclass
+export interface DedupeStats {
+  total_messages: number
+  system_filtered: number
+  media_count: number
+  keyword_filtered: number
+  local_duplicates: number
+  batch_duplicates: number
+  db_duplicates: number
+  duplicates_removed: number
+  final_unique_chunks: number
+  created_chunks: number
+  ignored_chunks: number
+  parser_failures: number
+  notes: string[]
+}
