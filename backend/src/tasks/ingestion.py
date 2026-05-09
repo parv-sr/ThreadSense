@@ -19,7 +19,7 @@ from backend.src.tasks import broker
 log = structlog.get_logger(__name__)
 
 KEYWORDS_RE = re.compile(
-    r"(bhk|rent|sale|lease|price|cr\b|lacs?|sqft|carpet|furnished|office|shop|flat|buy|sell|want|studio|rk|apt|apartment|tower|deposit|budget)",
+    r"\b(bhk|rent|sale|lease|price|cr|lacs?|sqft|carpet|furnished|office|shop|flat|buy|sell|want|studio|rk|apt|apartment|tower|deposit|budget)\b",
     re.IGNORECASE,
 )
 JUNK_RE = re.compile(
