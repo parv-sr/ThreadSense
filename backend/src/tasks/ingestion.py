@@ -75,8 +75,8 @@ def _looks_like_listing_candidate(cleaned_text: str) -> bool:
 
 
 def _normalize_for_hash(text: str | None, sender: str | None) -> str:
-    norm_text = re.sub(r"\s+", "", text or "").lower()
-    norm_sender = re.sub(r"\s+", "", sender or "").lower()
+    norm_text = re.sub(r"[^\w]+", "", text or "").lower()
+    norm_sender = re.sub(r"[^\w]+", "", sender or "").lower()
     return hashlib.sha256(f"{norm_text}|{norm_sender}".encode("utf-8")).hexdigest()
 
 
