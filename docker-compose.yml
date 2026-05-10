@@ -78,7 +78,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: ["taskiq", "worker", "src.main:broker", "src.tasks"]
+    command: [ "celery", "-A", "src.tasks", "worker", "--loglevel=info", "--concurrency=10" ]
 
   frontend:
     build:
