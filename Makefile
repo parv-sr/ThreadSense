@@ -1,4 +1,4 @@
 worker:
-	uv run taskiq worker backend.src.tasks:broker --workers 4 --max-async-tasks 100
+	celery -A backend.src.tasks worker --loglevel=info --concurrency=10
 api:
 	uvicorn backend.src.main:app --reload

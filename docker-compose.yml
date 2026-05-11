@@ -58,9 +58,9 @@ services:
     command: [ "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000" ]
     networks:
       - internal
-      - traefik-net
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=threadsense_internal"
       # Route /api and /health to this backend API
       - "traefik.http.routers.threadsense-api.rule=Host(`${THREADSENSE_DOMAIN}`) && (PathPrefix(`/api`) || PathPrefix(`/health`))"
       - "traefik.http.routers.threadsense-api.entrypoints=websecure"
@@ -93,8 +93,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    # Fixed: Swapped Celery out for the Taskiq worker using uv
-    command: [ "uv", "run", "taskiq", "worker", "src.tasks:broker" ]
+    command: [ "celery", "-A", "src.tasks", "worker", "--loglevel=info", "--concurrency=10" ]
     networks:
       - internal
 
@@ -110,7 +109,6 @@ services:
       - api
     networks:
       - internal
-      - traefik-net
     labels:
       - "traefik.enable=true"
       # Catch-all frontend routing
@@ -127,6 +125,3 @@ volumes:
 networks:
   internal:
     name: threadsense_internal
-  traefik-net:
-    external: true
-    name: traefik-net # IMPORTANT: Make sure this matches your VPS Traefik network name
