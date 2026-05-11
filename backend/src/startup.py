@@ -10,27 +10,24 @@ from alembic.config import Config
 log = structlog.get_logger(__name__)
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
-
-def _get_alembic_head(alembic_cfg: Config) -> str:
-    """Return the current head revision id from the migration scripts."""
-    from alembic.script import ScriptDirectory
-    script = ScriptDirectory.from_config(alembic_cfg)
-    return script.get_current_head()
-
-
 def _fix_orphaned_revision(alembic_cfg: Config) -> None:
-    """Directly UPDATE alembic_version in the DB, bypassing env.py entirely."""
+    """Replace the orphaned revision in alembic_version with the current head.
+
+    Uses asyncpg directly because Alembic's own stamp command also
+    reads the orphaned revision through env.py and crashes.
+    """
     import os
     import asyncpg
+    from alembic.script import ScriptDirectory
 
     async_url = os.environ.get(
         "DATABASE_URL",
         "postgresql+asyncpg://threadsense:threadsense@db:5432/threadsense",
     )
-    # Convert SQLAlchemy URL to plain DSN for asyncpg
     dsn = async_url.replace("postgresql+asyncpg://", "postgresql://")
-    head = _get_alembic_head(alembic_cfg)
-    log.warning("fixing_orphaned_revision", new_head=head, action="direct SQL update")
+    script = ScriptDirectory.from_config(alembic_cfg)
+    head = script.get_current_head()
+    log.warning("fixing_orphaned_revision", stamping_to=head, action="direct SQL update")
 
     async def _do_fix() -> None:
         conn = await asyncpg.connect(dsn)
@@ -100,8 +97,33 @@ async def create_superuser() -> None:
                 log.info("superuser_updated", email=email)
 
 
+async def _repair_schema() -> None:
+    """Ensure columns expected by the ORM exist in the database.
+
+    This covers the case where alembic_version was force-stamped to
+    head (skipping migration 6e4d774441f4).  Uses ADD COLUMN IF NOT
+    EXISTS so it is harmless when columns already exist.
+    """
+    from backend.src.db.session import AsyncSessionLocal
+    from sqlalchemy import text
+
+    patches = [
+        "ALTER TABLE property_listings ADD COLUMN IF NOT EXISTS floor_band VARCHAR(50)",
+        "ALTER TABLE property_listings ADD COLUMN IF NOT EXISTS price_per_sqft INTEGER",
+        "ALTER TABLE property_listings ADD COLUMN IF NOT EXISTS landmark VARCHAR(255)",
+        "ALTER TABLE property_listings ADD COLUMN IF NOT EXISTS is_verified BOOLEAN NOT NULL DEFAULT false",
+    ]
+
+    async with AsyncSessionLocal() as session:
+        for sql in patches:
+            await session.execute(text(sql))
+        await session.commit()
+        log.info("schema_repair_complete")
+
+
 async def initialize_infrastructure() -> None:
     await run_migrations()
+    await _repair_schema()
     try:
         await create_superuser()
     except Exception as exc:  # noqa: BLE001
