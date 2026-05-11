@@ -10,23 +10,27 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      test: [ "CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}" ]
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - internal
 
   redis:
     image: redis:alpine
     container_name: threadsense-redis
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    command: [ "redis-server", "--appendonly", "yes" ]
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - internal
 
   api:
     build:
@@ -46,14 +50,25 @@ services:
       THREADSENSE_ADMIN_KEY: ${THREADSENSE_ADMIN_KEY:-change-me}
     volumes:
       - uploads:/app/uploads
-    ports:
-      - "8000:8000"
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: [ "uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000" ]
+    networks:
+      - internal
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=threadsense_internal"
+      # Route /api and /health to this backend API
+      - "traefik.http.routers.threadsense-api.rule=Host(`${THREADSENSE_DOMAIN}`) && (PathPrefix(`/api`) || PathPrefix(`/health`))"
+      - "traefik.http.routers.threadsense-api.entrypoints=websecure"
+      - "traefik.http.routers.threadsense-api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.threadsense-api.loadbalancer.server.port=8000"
+      # SSE Buffer Fix: Ensures real-time progress bar streams smoothly
+      - "traefik.http.middlewares.threadsense-api-buffering.buffering.maxRequestBodyBytes=0"
+      - "traefik.http.routers.threadsense-api.middlewares=threadsense-api-buffering"
 
   worker:
     build:
@@ -78,7 +93,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: [ "celery", "-A", "src.tasks", "worker", "--loglevel=info", "--concurrency=10" ]
+    # Fixed: Swapped Celery out for the Taskiq worker using uv
+    command: [ "uv", "run", "taskiq", "worker", "src.tasks:broker" ]
+    networks:
+      - internal
 
   frontend:
     build:
@@ -90,27 +108,21 @@ services:
     restart: unless-stopped
     depends_on:
       - api
-
-  caddy:
-    image: caddy:2-alpine
-    container_name: threadsense-caddy
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-    environment:
-      THREADSENSE_DOMAIN: ${THREADSENSE_DOMAIN:-localhost}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      - api
-      - frontend
+    networks:
+      - internal
+    labels:
+      - "traefik.enable=true"
+      # Catch-all frontend routing
+      - "traefik.http.routers.threadsense-front.rule=Host(`${THREADSENSE_DOMAIN}`)"
+      - "traefik.http.routers.threadsense-front.entrypoints=websecure"
+      - "traefik.http.routers.threadsense-front.tls.certresolver=letsencrypt"
+      - "traefik.http.services.threadsense-front.loadbalancer.server.port=80"
 
 volumes:
   postgres_data:
   redis_data:
-  caddy_data:
-  caddy_config:
   uploads:
+
+networks:
+  internal:
+    name: threadsense_internal
