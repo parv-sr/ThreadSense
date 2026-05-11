@@ -13,7 +13,21 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
 def _run_alembic_upgrade() -> None:
     alembic_cfg = Config(str(BACKEND_ROOT / "alembic.ini"))
-    command.upgrade(alembic_cfg, "head")
+    try:
+        command.upgrade(alembic_cfg, "head")
+    except Exception as exc:
+        # If the DB is stamped at a revision that no longer exists in the
+        # migration files (e.g. after a git rebase), re-stamp to head.
+        if "Can't locate revision" in str(exc):
+            log.warning(
+                "orphaned_alembic_revision",
+                error=str(exc),
+                action="stamping head and retrying",
+            )
+            command.stamp(alembic_cfg, "head")
+            command.upgrade(alembic_cfg, "head")
+        else:
+            raise
 
 
 async def run_migrations() -> None:
