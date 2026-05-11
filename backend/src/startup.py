@@ -60,7 +60,10 @@ async def create_superuser() -> None:
 
 async def initialize_infrastructure() -> None:
     await run_migrations()
-    await create_superuser()
+    try:
+        await create_superuser()
+    except Exception as exc:  # noqa: BLE001
+        log.error("superuser_creation_failed", error=str(exc), exc_info=True)
 
 
 if __name__ == "__main__":
