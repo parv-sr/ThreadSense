@@ -31,27 +31,32 @@ log = structlog.get_logger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # ── Stage 1: Database migrations ──────────────────────────────────────
-    await initialize_infrastructure()
-
-    # ── Stage 2: Celery broker connection ─────────────────────────────────
-    await broker.startup()
-    log.info("broker_connected", redis_url=settings.redis_broker_url)
-
-    # ── Stage 3: Orphan recovery ──────────────────────────────────────────
     try:
-        from backend.src.tasks.recovery import recover_orphaned_tasks
-        await recover_orphaned_tasks()
-    except Exception as exc:  # noqa: BLE001
-        log.error("orphan_recovery_failed", error=str(exc))
+        # ── Stage 1: Database migrations ──────────────────────────────────────
+        await initialize_infrastructure()
 
-    # ── Stage 4: Ready ────────────────────────────────────────────────────
-    log.info(
-        "startup_ready",
-        database=mask_database_url(settings.database_url),
-        llm_model=settings.openrouter_chat_model,
-        embedding_model=settings.openrouter_embedding_model,
-    )
+        # ── Stage 2: Celery broker connection ─────────────────────────────────
+        await broker.startup()
+        log.info("broker_connected", redis_url=settings.redis_broker_url)
+
+        # ── Stage 3: Orphan recovery ──────────────────────────────────────────
+        try:
+            from backend.src.tasks.recovery import recover_orphaned_tasks
+            await recover_orphaned_tasks()
+        except Exception as exc:  # noqa: BLE001
+            log.error("orphan_recovery_failed", error=str(exc))
+
+        # ── Stage 4: Ready ────────────────────────────────────────────────────
+        log.info(
+            "startup_ready",
+            database=mask_database_url(settings.database_url),
+            llm_model=settings.openrouter_chat_model,
+            embedding_model=settings.openrouter_embedding_model,
+        )
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        raise
 
     try:
         yield
