@@ -105,7 +105,7 @@ const FilterSidebar = ({
             onChange={(e) => set('semantic_q', e.target.value)}
             className='bg-zinc-900 border-zinc-800 text-zinc-200 h-9 placeholder:text-zinc-600'
           />
-          <p className='mt-1 text-[10px] font-medium text-zinc-500/70'>Ranks by embedding similarity.</p>
+          <p className='mt-1 text-[10px] font-medium text-zinc-500/70'>Ranks by word similarity.</p>
         </div>
 
         <div>

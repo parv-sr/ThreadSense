@@ -107,7 +107,7 @@ export const LoginPage = () => {
         </form>
 
         <p className='mt-6 text-center text-xs text-zinc-600'>
-          Self-hosted instance · SQL filters first, vectors second.
+          Cloud-hosted instance · Deterministic and semantic search.
         </p>
       </div>
     </div>

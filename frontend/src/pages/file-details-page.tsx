@@ -82,7 +82,7 @@ export const FileDetailsPage = () => {
       <Card className='p-5'>
         <div className='flex items-start justify-between'>
           <div>
-            <p className='text-xs uppercase tracking-wider text-zinc-500'>Section A · File Metadata</p>
+            <p className='text-xs uppercase tracking-wider text-zinc-500'>· File Metadata</p>
             <h1 className='mt-2 text-2xl font-semibold'>{upload?.fileName ?? `Upload ${rawfileId}`}</h1>
           </div>
           {confirmDelete ? (
@@ -131,7 +131,7 @@ export const FileDetailsPage = () => {
       </Card>
 
       <Card className='p-5'>
-        <p className='text-xs uppercase tracking-wider text-zinc-500'>Section B · Live Processing</p>
+        <p className='text-xs uppercase tracking-wider text-zinc-500'>· Live Processing</p>
 
         <div className='mt-2 flex items-center justify-between'>
           <p className='text-sm text-zinc-300'>Overall Status</p>
@@ -166,7 +166,7 @@ export const FileDetailsPage = () => {
         )}
 
         {streamState.isDone && (
-          <div className='mt-2 text-sm text-emerald-400 font-semibold'>✅ Processing complete.</div>
+          <div className='mt-2 text-sm text-emerald-400 font-semibold'>Processing complete.</div>
         )}
 
         <div className='mt-4 max-h-[300px] overflow-auto rounded-xl border border-zinc-800 bg-black p-4'>
@@ -179,7 +179,7 @@ export const FileDetailsPage = () => {
       </Card>
 
       <Card className='p-5'>
-        <p className='text-xs uppercase tracking-wider text-zinc-500'>Section C · Processed Data Summary</p>
+        <p className='text-xs uppercase tracking-wider text-zinc-500'>· Processed Data Summary</p>
         <div className='mt-4'>
             {insights ? (
               <div className="space-y-4">
@@ -208,7 +208,7 @@ export const FileDetailsPage = () => {
 
       {isTerminal && hasStats && (
         <Card className='p-5'>
-          <p className='text-xs uppercase tracking-wider text-zinc-500'>Section D · Dedupe Statistics</p>
+          <p className='text-xs uppercase tracking-wider text-zinc-500'>· Dedupe Statistics</p>
           <p className='mt-1 text-sm text-zinc-400'>Message deduplication and filtering breakdown from the ingestion pipeline.</p>
           <div className='mt-4 grid gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4'>
             {Object.entries(STAT_LABELS).map(([key, label]) => {
