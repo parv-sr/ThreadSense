@@ -5,7 +5,7 @@
 ThreadSense is purpose-built for real estate brokers. It ingests raw WhatsApp chat exports and turns unstructured messages into pristine, filterable property listings. Whether you need to quickly narrow inventory by floor band and intent, or chat directly with an AI assistant for comparative client analyses, ThreadSense serves as a robust CRM and retrieval engine.
 
 ![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)
-![Django](https://img.shields.io/badge/Django-5.2-092E20.svg)
+![FastAPI](https://img.shields.io/badge/FastAPI-005571?style=for-the-badge&logo=fastapi)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-pgvector-336791.svg)
 ![Celery](https://img.shields.io/badge/Celery-Redis-37814A.svg)
 ![OpenAI](https://img.shields.io/badge/OpenAI-GPT--4o--mini-412991.svg)
