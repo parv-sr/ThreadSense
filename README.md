@@ -1,8 +1,8 @@
-# Overview
+# ThreadSense
 
-ThreadSense transforms messy, raw WhatsApp real estate chat exports into beautifully structured, searchable, and conversational property listings.
+> **Transform messy WhatsApp real estate chats into a structured, searchable property database — powered by AI.**
 
-Designed specifically to streamline broker workflows, it processes unstructured messages and turns them into a pristine database. Whether you need to quickly filter inventory by floor band and intent, or chat directly with an AI assistant to run comparative analyses for a client, ThreadSense serves as a robust real estate CRM and retrieval engine.
+ThreadSense is purpose-built for real estate brokers. It ingests raw WhatsApp chat exports and turns unstructured messages into pristine, filterable property listings. Whether you need to quickly narrow inventory by floor band and intent, or chat directly with an AI assistant for comparative client analyses, ThreadSense serves as a robust CRM and retrieval engine.
 
 ![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)
 ![Django](https://img.shields.io/badge/Django-5.2-092E20.svg)
@@ -10,37 +10,39 @@ Designed specifically to streamline broker workflows, it processes unstructured 
 ![Celery](https://img.shields.io/badge/Celery-Redis-37814A.svg)
 ![OpenAI](https://img.shields.io/badge/OpenAI-GPT--4o--mini-412991.svg)
 
-# User Features
-Lightning-Fast Parsing: Ingests massive WhatsApp chat exports instantly via a low-level engine.
+---
 
-AI-Powered Extraction: Automatically structures raw text into beds, baths, price, location, and intent using state-of-the-art LLMs.
+## ✨ Features
 
-Hybrid Search Engine: Instantly filter properties by hard parameters (like budget or configuration) combined with semantic AI search.
+| Feature | Description |
+|---|---|
+| ⚡ **Lightning-Fast Parsing** | Ingests massive WhatsApp chat exports instantly via a low-level Rust engine. |
+| 🤖 **AI-Powered Extraction** | Automatically structures raw text into beds, baths, price, location, and intent using state-of-the-art LLMs. |
+| 🔍 **Hybrid Search Engine** | Filter properties by hard parameters (budget, configuration) combined with semantic AI search. |
+| 💬 **Conversational Assistant** | Ask questions like *"Show me ready-to-move 3BHKs in Sector 20 under 2Cr"* and get precise, verified listings. |
+| 🔗 **Source Verification** | Every listing links back to the original WhatsApp message — zero hallucinations, full traceability. |
+| 📁 **Collections & Workspaces** | Curate and save matching listings into custom folders for specific clients. |
 
-Conversational Assistant: Ask questions like "Show me ready-to-move 3BHKs in Sector 20 under 2Cr" and get precise, verified listings back.
+---
 
-Source Verification: Every listing links directly back to the original WhatsApp message, ensuring zero hallucinations and full traceability.
+## 🏗️ Technical Architecture
 
-Collections & Workspaces: Easily curate and save matching listings into custom folders for specific clients.
-
-# Technical Architecture
 ThreadSense utilizes a highly asynchronous, high-throughput stack designed for minimal operational complexity.
 
-# Core Components
-Frontend: React SPA built with Vite and styled with Tailwind CSS.
+### Core Components
 
-Backend: FastAPI leveraging pure asyncio for endpoints and background jobs.
+| Layer | Technology |
+|---|---|
+| **Frontend** | React SPA — Vite + Tailwind CSS |
+| **Backend** | FastAPI — pure `asyncio` for endpoints and background jobs |
+| **AI & Orchestration** | LangGraph integrated with OpenRouter |
+| **Ingestion Engine** | High-performance Rust parser via PyO3 |
+| **Database & Vector Store** | PostgreSQL + `pgvector` — unified single source of truth |
+| **Infrastructure** | Docker Compose orchestration + Caddy (reverse proxy, automatic TLS) |
 
-AI & Orchestration: LangGraph integrated with OpenRouter.
+### Directory Structure
 
-Ingestion Engine: High-performance Rust parser integrated into Python via PyO3.
-
-Database & Vector Store: PostgreSQL with the pgvector extension acting as the unified single source of truth.
-
-Infrastructure: Docker Compose orchestration paired with Caddy for reverse proxying and automatic TLS termination.
-
-Directory Structure
-Plaintext
+```
 ThreadSense/
 ├── rust_parser/          # High-performance WhatsApp parser (Rust/PyO3)
 ├── backend/              # Async FastAPI application
@@ -59,62 +61,85 @@ ThreadSense/
 ├── frontend/             # React SPA (Vite build)
 ├── docker-compose.yml    # Multi-service orchestration
 └── Caddyfile             # Reverse proxy and HTTPS configuration
-Deployment Quick Start
-1. Clone the repository:
+```
 
-Bash
+---
+
+## 🚀 Deployment Quick Start
+
+### 1. Clone the repository
+
+```bash
 git clone https://github.com/parv-sr/ThreadSense.git
 cd ThreadSense
-2. Configure environment:
-Create a .env file at the root based on the provided examples.
+```
 
-Bash
+### 2. Configure environment
+
+Create a `.env` file at the project root based on the provided example:
+
+```bash
 cp backend/.env.example .env
-Key Environment Variables:
+```
 
-OPENROUTER_API_KEY: API key for LLM extraction and embeddings.
+#### Key Environment Variables
 
-OPENROUTER_CHAT_MODEL: Recommended google/gemini-1.5-flash
+| Variable | Purpose |
+|---|---|
+| `OPENROUTER_API_KEY` | API key for LLM extraction and embeddings |
+| `OPENROUTER_CHAT_MODEL` | Recommended: `google/gemini-1.5-flash` |
+| `OPENROUTER_EMBEDDING_MODEL` | Recommended: `openai/text-embedding-3-small` |
+| `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` | Database credentials |
+| `THREADSENSE_DOMAIN` | Domain for Caddy (use `localhost` for local testing) |
 
-OPENROUTER_EMBEDDING_MODEL: Recommended openai/text-embedding-3-small
+### 3. Start the stack
 
-POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD: Database credentials.
-
-THREADSENSE_DOMAIN: Domain for Caddy (use localhost for local testing).
-
-3. Start the stack:
-
-Bash
+```bash
 docker compose up --build
-The application will be available at http://localhost (or your configured domain).
+```
 
-Developer Guide
-Frontend Development
-Bash
+The application will be available at `http://localhost` (or your configured domain).
+
+---
+
+## 🛠️ Developer Guide
+
+### Frontend Development
+
+```bash
 cd frontend
 npm install
 npm run dev
-Backend Development
-ThreadSense uses uv for lightning-fast Python dependency management.
+```
 
-Bash
+### Backend Development
+
+ThreadSense uses [uv](https://github.com/astral-sh/uv) for lightning-fast Python dependency management.
+
+```bash
 cd backend
 uv sync
 uvicorn src.main:app --reload
-Testing
-To run the backend test suite:
+```
 
-Bash
+### Testing
+
+Run the backend test suite:
+
+```bash
 python -m pytest backend/tests/
-Contributing
-Fork the repository.
+```
 
-Create a focused feature branch.
+---
 
-Make atomic commits.
+## 🤝 Contributing
 
-Ensure all Pytest and TypeScript checks pass.
+1. **Fork** the repository.
+2. Create a **focused feature branch**.
+3. Make **atomic commits**.
+4. Ensure all **Pytest and TypeScript checks** pass.
+5. Submit a **pull request** with a clear description.
 
-Submit a pull request with a clear description.
+---
 
 License: This project is for personal and internal use. Contact the maintainer for licensing questions.
