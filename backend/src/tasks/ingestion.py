@@ -141,15 +141,18 @@ async def ingest_raw_file_task(rawfile_id: str) -> dict[str, Any]:
     # ── Phase 2: Read & parse file ────────────────────────────────────────
     try:
         content = rf_content
-        if not content.strip() and rf_file:
+        suffix = Path(rf_file_name).suffix.lower()
+        is_archive = suffix in {".zip", ".rar"}
+
+        # Only attempt to read as text if it's NOT a zip/rar archive
+        if not is_archive and not content.strip() and rf_file:
             try:
-                content = Path(rf_file).read_text(encoding="utf-8")
-            except UnicodeDecodeError:
-                content = Path(rf_file).read_text(encoding="cp1252")
+                # errors="replace" prevents crashes on stray corrupted bytes in txt files
+                content = Path(rf_file).read_text(encoding="utf-8", errors="replace")
             except Exception as exc:  # noqa: BLE001
                 raise IngestionError(f"Unable to read source file: {exc}") from exc
 
-        if not content.strip():
+        if not content.strip() and not is_archive:
             stats.add_note("Empty upload")
             async with AsyncSessionLocal() as session:
                 rawfile = await session.get(RawFile, parsed_rawfile_id)

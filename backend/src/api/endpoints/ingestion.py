@@ -35,7 +35,7 @@ def _sanitise_content(text: str) -> str:
 router = APIRouter(prefix="/ingest", tags=["ingestion"])
 log = structlog.get_logger(__name__)
 settings = get_settings()
-UPLOAD_ROOT = Path("/tmp/threadsense_uploads")
+UPLOAD_ROOT = Path("/app/uploads")
 TASK_ID_PATTERN = re.compile(r"(?:^|;\s*)task_id=([^;]+)")
 
 
